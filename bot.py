@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("8681003972:AAEwkCCMycrtIHFceVS_lonCo2vD3-iPyZk")
 ADMIN_ID = 8396752402
 AD_CHANNEL_ID = "@Vasetearminazizi"
 CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadearminazizi", "https://t.me/etemadearminazizi")]
