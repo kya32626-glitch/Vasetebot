@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-BOT_TOKEN = os.environ.get("8681003972:AAGOYfxOTRbbpK8mtoD77kGw9BNFWYEP6l4")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 8396752402
 AD_CHANNEL_ID = "@Vasetearminazizi"
 CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadearminazizi", "https://t.me/etemadearminazizi")]
@@ -21,6 +21,14 @@ c.execute('''CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOIN
 conn.commit()
 
 def is_admin(user_id): return user_id == ADMIN_ID
+
+def extract_clean_form(text):
+    if not text: return text
+    markers = ["اطلاعات اکانتتونو", "❗️ اگر اکانت شما", "فرم را همراه عکس ها", "ممنون از شما"]
+    for marker in markers:
+        if marker in text:
+            text = text.split(marker)[0].strip()
+    return text
 
 async def check_membership(user_id, bot):
     not_joined = []
@@ -105,11 +113,16 @@ async def submit_ad(update, context):
     await query.answer()
     user_id = query.from_user.id
     msg_ids = context.user_data.get('ad_messages', [])
-    if not msg_ids: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
-    c.execute("INSERT INTO ads (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, msg_ids))))
+    text = context.user_data.get('ad_text', '')
+    if not msg_ids and not text: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
+    db_ids = msg_ids + (["text"] if text else [])
+    c.execute("INSERT INTO ads (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, db_ids))))
     ad_id = c.lastrowid
     conn.commit()
     admin_msg_ids = []
+    if text:
+        m = await context.bot.send_message(ADMIN_ID, text)
+        admin_msg_ids.append(m.message_id)
     for mid in msg_ids:
         try:
             fwd = await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=user_id, message_id=mid)
@@ -127,11 +140,16 @@ async def submit_pricing(update, context):
     await query.answer()
     user_id = query.from_user.id
     msg_ids = context.user_data.get('pricing_messages', [])
-    if not msg_ids: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
-    c.execute("INSERT INTO pricing_requests (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, msg_ids))))
+    text = context.user_data.get('pricing_text', '')
+    if not msg_ids and not text: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
+    db_ids = msg_ids + (["text"] if text else [])
+    c.execute("INSERT INTO pricing_requests (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, db_ids))))
     req_id = c.lastrowid
     conn.commit()
     admin_msg_ids = []
+    if text:
+        m = await context.bot.send_message(ADMIN_ID, text)
+        admin_msg_ids.append(m.message_id)
     for mid in msg_ids:
         try:
             fwd = await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=user_id, message_id=mid)
@@ -173,8 +191,7 @@ async def approve_ad(update, context, ad_id):
     row = c.fetchone()
     if not row or row[2] != 'pending': return
     user_id, admin_msg_ids_str, status = row
-    admin_msg_ids = [int(x) for x in admin_msg_ids_str.split(',') if x]
-    for amid in admin_msg_ids:
+    for amid in [int(x) for x in admin_msg_ids_str.split(',') if x]:
         try: await context.bot.copy_message(chat_id=AD_CHANNEL_ID, from_chat_id=ADMIN_ID, message_id=amid)
         except: pass
     c.execute("UPDATE ads SET status='approved' WHERE id=?", (ad_id,))
@@ -188,10 +205,9 @@ async def reject_ad(update, context, ad_id):
     c.execute("SELECT user_id, status FROM ads WHERE id=?", (ad_id,))
     row = c.fetchone()
     if not row or row[1] != 'pending': return
-    user_id, status = row
     c.execute("UPDATE ads SET status='rejected' WHERE id=?", (ad_id,))
     conn.commit()
-    try: await context.bot.send_message(user_id, f"❌ آگهی شما (#{ad_id}) رد شد.")
+    try: await context.bot.send_message(row[0], f"❌ آگهی شما (#{ad_id}) رد شد.")
     except: pass
     await query.edit_message_text(f"❌ آگهی #{ad_id} رد شد.")
 
@@ -231,8 +247,7 @@ async def admin_show_ads(update, context):
     if not rows: return await query.edit_message_text("هیچ آگهی ثبت نشده است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")]]))
     text, buttons = "📋 آگهی های ثبت شده:\n\n", []
     for ad_id, user_id, status in rows:
-        emoji = "⏳" if status == 'pending' else ("✅" if status == 'approved' else "❌")
-        text += f"{emoji} #{ad_id} - کاربر {user_id}\n"
+        text += f"{'⏳' if status == 'pending' else ('✅' if status == 'approved' else '❌')} #{ad_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"مدیریت #{ad_id}", callback_data=f"manage_ad_{ad_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -251,8 +266,7 @@ async def admin_show_pricing(update, context):
     if not rows: return await query.edit_message_text("هیچ درخواستی وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")]]))
     text, buttons = "💰 درخواست های قیمت گزاری:\n\n", []
     for req_id, user_id, status in rows:
-        emoji = "⏳" if status == 'pending' else "✅"
-        text += f"{emoji} #{req_id} - کاربر {user_id}\n"
+        text += f"{'⏳' if status == 'pending' else '✅'} #{req_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"ارسال قیمت #{req_id}", callback_data=f"send_price_{req_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -264,8 +278,7 @@ async def admin_show_buy(update, context):
     if not rows: return await query.edit_message_text("هیچ درخواست خریدی وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")]]))
     text, buttons = "🛒 درخواست های خرید:\n\n", []
     for req_id, user_id, status in rows:
-        emoji = "⏳" if status == 'pending' else "✅"
-        text += f"{emoji} #{req_id} - کاربر {user_id}\n"
+        text += f"{'⏳' if status == 'pending' else '✅'} #{req_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"پاسخ #{req_id}", callback_data=f"reply_buy_{req_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -297,8 +310,7 @@ async def button_handler(update, context):
     await query.answer()
     data = query.data
     user_id = query.from_user.id
-    admin_only = ('approve_ad_', 'reject_ad_', 'send_price_', 'reject_pricing_', 'reply_buy_', 'manage_ad_', 'admin_', 'admin_answer_')
-    if any(data.startswith(p) for p in admin_only) and not is_admin(user_id): return await query.answer("دسترسی ندارید", show_alert=True)
+    if any(data.startswith(p) for p in ('approve_ad_', 'reject_ad_', 'send_price_', 'reject_pricing_', 'reply_buy_', 'manage_ad_', 'admin_', 'admin_answer_')) and not is_admin(user_id): return await query.answer("دسترسی ندارید", show_alert=True)
     if data == "check_join":
         if await check_membership(user_id, context.bot): return await query.answer("هنوز عضو نشدید", show_alert=True)
         await show_user_menu(update, context)
@@ -393,18 +405,30 @@ async def message_handler(update, context):
         except: pass
         context.user_data.clear()
     elif state == 'ad_waiting':
-        context.user_data['ad_messages'].append(msg.message_id)
+        if msg.text:
+            cleaned = extract_clean_form(msg.text)
+            context.user_data['ad_text'] = context.user_data.get('ad_text', '') + '\n' + cleaned
+            context.user_data['ad_text'] = context.user_data['ad_text'].strip()
+        elif msg.photo or msg.document or msg.video:
+            context.user_data['ad_messages'].append(msg.message_id)
         if not context.user_data.get('prompted'):
             context.user_data['prompted'] = True
             await msg.reply_text("📥 پیام دریافت شد.\nوقتی تمام شد دکمه زیر را بزنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ پایان و ارسال", callback_data="submit_ad")]]))
     elif state == 'pricing_waiting':
-        context.user_data['pricing_messages'].append(msg.message_id)
+        if msg.text:
+            cleaned = extract_clean_form(msg.text)
+            context.user_data['pricing_text'] = context.user_data.get('pricing_text', '') + '\n' + cleaned
+            context.user_data['pricing_text'] = context.user_data['pricing_text'].strip()
+        elif msg.photo or msg.document or msg.video:
+            context.user_data['pricing_messages'].append(msg.message_id)
         if not context.user_data.get('prompted'):
             context.user_data['prompted'] = True
             await msg.reply_text("📥 اطلاعات دریافت شد.\nوقتی تمام شد دکمه زیر را بزنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ پایان و ارسال", callback_data="submit_pricing")]]))
     elif state == 'buy_waiting':
-        context.user_data['buy_messages'].append(msg.message_id)
-        if msg.text: context.user_data['buy_link'] = msg.text
+        if msg.text:
+            context.user_data['buy_link'] = msg.text
+        elif msg.photo or msg.document or msg.video:
+            context.user_data['buy_messages'].append(msg.message_id)
         if not context.user_data.get('prompted'):
             context.user_data['prompted'] = True
             await msg.reply_text("📥 دریافت شد.\nبرای ارسال نهایی دکمه زیر را بزنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ ارسال", callback_data="submit_buy")]]))
@@ -425,8 +449,7 @@ async def on_startup():
     await bot_app.initialize()
     await bot_app.bot.set_my_commands([BotCommand("start", "شروع مجدد ربات")])
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
-    webhook_url = f"{render_url}/{BOT_TOKEN}"
-    await bot_app.bot.set_webhook(webhook_url)
+    await bot_app.bot.set_webhook(f"{render_url}/{BOT_TOKEN}")
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
@@ -436,8 +459,7 @@ async def telegram_webhook(request: Request):
     return Response(status_code=200)
 
 @app.get("/")
-async def root():
-    return {"status": "Bot is running!"}
+async def root(): return {"status": "Bot is running!"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
