@@ -7,7 +7,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# توکن دقیقا از رندر خونده میشه
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 8396752402
 AD_CHANNEL_ID = "@Vasetearminazizi"
@@ -16,7 +15,6 @@ CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadear
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
-# اضافه کردن ستون های جدید برای بن و زیرمجموعه
 try:
     c.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
     c.execute("ALTER TABLE users ADD COLUMN ref_count INTEGER DEFAULT 0")
@@ -29,7 +27,6 @@ c.execute('''CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOIN
 conn.commit()
 
 def is_admin(user_id): return user_id == ADMIN_ID
-
 def is_banned(user_id):
     c.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
@@ -58,6 +55,97 @@ def admin_menu_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📋 آگهی های ثبت شده", callback_data="admin_ads")], [InlineKeyboardButton("💰 درخواست قیمت گزاری", callback_data="admin_pricing")], [InlineKeyboardButton("🛒 خرید اکانت", callback_data="admin_buy")], [InlineKeyboardButton("❓ سوال های پرسیده شده", callback_data="admin_questions")], [InlineKeyboardButton("🚫 کاربران بن شده", callback_data="admin_bans")], [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")]])
 
 WELCOME = "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi"
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    context.user_data.clear()
+    if is_banned(user_id): return await update.message.reply_text("🚫 شما از ربات بن شده اید.")
+    
+    c.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    is_new = not c.fetchone()
+    c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    
+    if is_new and context.args and context.args[0].startswith("ref_"):
+        inviter_id = int(context.args[0].replace("ref_", ""))
+        if inviter_id != user_id:
+            c.execute("INSERT OR IGNORE INTO referrals (invited_id, inviter_id) VALUES (?, ?)", (user_id, inviter_id))
+            if c.total_changes > 0:
+                conn.commit()
+                c.execute("SELECT COUNT(*) FROM referrals WHERE inviter_id=?", (inviter_id,))
+                count = c.fetchone()[0]
+                c.execute("UPDATE users SET ref_count=? WHERE user_id=?", (count, inviter_id))
+                conn.commit()
+                try:
+                    await context.bot.send_message(inviter_id, f"🎉 یک نفر با لینک شما وارد ربات شد!\nتعداد زیرمجموعه‌های شما: {count}")
+                    if count == 20: await context.bot.send_message(ADMIN_ID, f"⚠️ کاربر {inviter_id} به ۲۰ زیرمجموعه رسید!")
+                except: pass
+                
+    if is_admin(user_id): return await show_admin_panel(update, context)
+    not_joined = await check_membership(user_id, context.bot)
+    if not_joined:
+        buttons = [[InlineKeyboardButton(f"🔗 عضویت در {ch}", url=link)] for ch, link in not_joined]
+        buttons.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
+        return await update.message.reply_text("برای استفاده از ربات ابتدا در کانال‌های زیر عضو شوید:", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text(WELCOME, reply_markup=main_menu_keyboard())
+
+async def show_admin_panel(update, context):
+    text = "🔧 پنل مدیریت\nیک گزینه را انتخاب کنید:"
+    if update.callback_query: await update.callback_query.edit_message_text(text, reply_markup=admin_menu_keyboard())
+    else: await update.message.reply_text(text, reply_markup=admin_menu_keyboard())
+
+async def show_user_menu(update, context):
+    if update.callback_query: await update.callback_query.edit_message_text(WELCOME, reply_markup=main_menu_keyboard())
+    else: await update.message.reply_text(WELCOME, reply_markup=main_menu_keyboard())
+
+async def mediator_handler(update, context):
+    text = "قیمت های واسطه گری به این صورت است:\n\nمعامله زیر 50 هزار : رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 50 هزار تا 100 هزار: رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 100 تا 300 : نفری ۱۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 400 تا 900 هزار: نفری ۵۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 1500 تا 3 میل : نفری 100 هزار\n━━━━━━━━━━━━━━━━━\nمعامله ۴ میل تا ۱۰ میل : نفری 350 هزار\n━━━━━━━━━━━━━━━━━\nمعامله های بالای 10 میل: نفری ۵۰۰ هزار\n\nاگر با قیمت ها اوکی بودید گزینه تایید رو بزنید."
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تایید", callback_data="mediator_confirm")], [InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def free_mediator_handler(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    bot_username = (await context.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    c.execute("SELECT ref_count FROM users WHERE user_id=?", (user_id,))
+    count = c.fetchone()[0] or 0
+    text = f"برای واسطه گری رایگان شما باید با لینک خود زیر مجموعه گیری داخل ربات کنید.\n\n🔗 **لینک اختصاصی شما:**\n`{ref_link}`\n\n👥 **تعداد زیرمجموعه‌های شما:** {count} نفر\n\n**لیست معامله‌ها:**\nمعامله 100 هزار تا 400 هزار: 20 زیر مجموعه\nمعامله بالای 400 تا 900 هزار: 30 زیر مجموعه\nمعامله 1 میلیون تا 3 میلیون: 50 زیر مجموعه\nمعامله 4 میلیون تا 10 میلیون: 100 زیر مجموعه\nمعامله های بالای 10 میلیون: 250 زیر مجموعه"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]), parse_mode='Markdown')
+
+async def mediator_confirm(update, context):
+    text = "لطفاً اطلاعات زیر را به ایدی زیر ارسال نمایید:\n\n@Vasete_armin_azizi\n\n1_ آیدی شما و طرف مقابل\n2_ فرم اگهی اکانت یا عکس ها\n3_ ارزش اکانت شما\n\n⚠️ توجه داشته باشید تایید دو مرحله اکانت کالاف دیوتی الزامی است.\n\n⚠️ معامله فقط توسط همین آیدی بالا انجام میشود و ربات واسطه گری نمیکند."
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def post_ad_handler(update, context):
+    text = "📋 فرم ثبت اگهی:\n\nنوع بازی🎮:\nـــــــــــــــــــــــــــــــــــ\n\nسیو ها📥:\nـــــــــــــــــــــــــــــــــ\n\nایا قابل چنج هست:\nتعداد سیپی🪙:\nتعداد گان متیک 🟥:\nتعداد گان لجند 🟨:\nتعداد بتل پس:\nتوضیحات فروشنده:\nUid:\nقیمت:\nآیدی فروشنده:\n\nجهت خرید اکانت اگهی کردن اکانت و قیمت گزاری و درخاست واسطه به بات مراجعه کنید:\n@Vasetearminazizibot\n\nجهت ارتباط با ادمین و واسطه گری اکانت:\n@Vasete_armin_azizi\n\nچنلمون:\nhttps://t.me/Vasetearminazizi\n\nاعتماد:\nhttps://t.me/etemadearminazizi\n\nاطلاعات اکانتتونو در فرم بالا پر کنید و سپس ارسال کنید\n\n❗️ اگر اکانت شما گزینه های زیر رو نداشته باشه آگهی نمیشه:\n1_ آیدی فروشنده الزامیس\n2_ عکس حد اقل 2 و حد اکثر 9 تا\n\nفرم را همراه عکس ها ارسال کنید و پیام اضافه نفرستید.\nممنون از شما❤️"
+    context.user_data.clear()
+    context.user_data['state'] = 'ad_waiting'
+    context.user_data['ad_messages'] = []
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def pricing_handler(update, context):
+    text = "برای قیمت گزاری اکانت اطلاعات زیر را ارسال نمایید:\n\n• عکس های اکانت\n• ایتم ها\n• وضعیت سیو ها\n• سیپی منفی دارد / ندارد\n\nلطفا از ارسال پیام های دیگر خودداری نمایید.\nپس از ارسال اطلاعات نهایتا تا یک الی دو ساعت قیمت تقریبی اکانت برای شما ارسال میشود."
+    context.user_data.clear()
+    context.user_data['state'] = 'pricing_waiting'
+    context.user_data['pricing_messages'] = []
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def buy_handler(update, context):
+    text = "اکانتی که قصد خرید ان را دارید لینک پیام آن را در چنل آگهی و دارید و بفرستید.\nدقت کنید اگهی فقط باید در چنل خرید فروش ما آگهی شده باشد.\n\nاز ارسال پیام های دیگر خودداری کنید.\nپس از ارسال آگهی ان اکانت استعلام گرفته میشود و سپس به شما اطلاع داده میشود.\n\nبا تشکر از همراهی شما."
+    context.user_data.clear()
+    context.user_data['state'] = 'buy_waiting'
+    context.user_data['buy_messages'] = []
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def report_handler(update, context):
+    context.user_data.clear()
+    context.user_data['state'] = 'report_waiting'
+    await update.callback_query.edit_message_text("⚠️ لطفاً مشکل یا باگ پیش آمده را توضیح دهید و ارسال کنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]))
+
+async def ask_question_handler(update, context):
+    context.user_data.clear()
+    context.user_data['state'] = 'question_waiting'
+    await update.callback_query.edit_message_text("❓ لطفاً سوال خود را بنویسید و ارسال کنید:\n(تنها یک پیام متنی بفرستید)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="restart")]]))
 
 async def submit_ad(update, context):
     query = update.callback_query
@@ -140,19 +228,13 @@ async def ban_user_action(update, context, target_id):
     query = update.callback_query
     c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (target_id,))
     conn.commit()
-    
-    # بن کردن از ربات
     try: await context.bot.ban_chat_member(chat_id=target_id, user_id=target_id)
     except: pass
-    
-    # بن کردن از کانال‌ها
     for ch, _ in CHANNELS:
         try: await context.bot.ban_chat_member(chat_id=ch, user_id=target_id)
         except: pass
-        
     try: await context.bot.send_message(target_id, "🚫 شما از ربات و کانال‌ها بن شدید.")
     except: pass
-    
     await query.answer(f"کاربر {target_id} بن شد.", show_alert=True)
 
 async def admin_show_bans(update, context):
@@ -160,7 +242,6 @@ async def admin_show_bans(update, context):
     c.execute("SELECT user_id FROM users WHERE is_banned=1")
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("🚫 هیچ کاربر بن شده‌ای وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
-    
     text, buttons = "🚫 لیست کاربران بن شده:\n\n", []
     for row in rows:
         uid = row[0]
