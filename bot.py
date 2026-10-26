@@ -8,29 +8,36 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 8396752402
 AD_CHANNEL_ID = "@Vasetearminazizi"
 CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadearminazizi", "https://t.me/etemadearminazizi")]
 
-conn = sqlite3.connect('bot.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
-try:
-    c.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
-    c.execute("ALTER TABLE users ADD COLUMN ref_count INTEGER DEFAULT 0")
-except: pass
-c.execute('''CREATE TABLE IF NOT EXISTS referrals (invited_id INTEGER PRIMARY KEY, inviter_id INTEGER)''')
-c.execute('''CREATE TABLE IF NOT EXISTS ads (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-c.execute('''CREATE TABLE IF NOT EXISTS pricing_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-c.execute('''CREATE TABLE IF NOT EXISTS buy_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', link TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-c.execute('''CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, question_text TEXT, answer_text TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-conn.commit()
+if DATABASE_URL:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn.autocommit = True
+    c = conn.cursor(cursor_factory=DictCursor)
+    def q(query): return query.replace("?", "%s")
+else:
+    conn = sqlite3.connect('bot.db', check_same_thread=False)
+    c = conn.cursor()
+    def q(query): return query
+
+c.execute(q('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, is_banned INT DEFAULT 0, ref_count INT DEFAULT 0)'''))
+c.execute(q('''CREATE TABLE IF NOT EXISTS referrals (invited_id BIGINT PRIMARY KEY, inviter_id BIGINT)'''))
+c.execute(q('''CREATE TABLE IF NOT EXISTS ads (id SERIAL PRIMARY KEY, user_id BIGINT, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
+c.execute(q('''CREATE TABLE IF NOT EXISTS pricing_requests (id SERIAL PRIMARY KEY, user_id BIGINT, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
+c.execute(q('''CREATE TABLE IF NOT EXISTS buy_requests (id SERIAL PRIMARY KEY, user_id BIGINT, message_ids TEXT, admin_msg_ids TEXT DEFAULT '', link TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
+c.execute(q('''CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, user_id BIGINT, question_text TEXT, answer_text TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
+if not DATABASE_URL: conn.commit()
 
 def is_admin(user_id): return user_id == ADMIN_ID
 def is_banned(user_id):
-    c.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,))
+    c.execute(q("SELECT is_banned FROM users WHERE user_id=?"), (user_id,))
     row = c.fetchone()
-    return row and row[0] == 1
+    return row and (row['is_banned'] if DATABASE_URL else row[0]) == 1
 
 def extract_clean_form(text):
     if not text: return text
@@ -38,6 +45,32 @@ def extract_clean_form(text):
     for marker in markers:
         if marker in text: text = text.split(marker)[0].strip()
     return text
+
+async def process_pending_referral(user_id, context):
+    """تابع جدید: ثبت زیرمجموعه فقط بعد از تایید عضویت"""
+    inviter_id = context.user_data.get('pending_ref')
+    if not inviter_id: return
+    
+    # چک میکنیم نکنه قبلا ثبت شده باشه
+    c.execute(q("SELECT invited_id FROM referrals WHERE invited_id=?"), (user_id,))
+    if c.fetchone():
+        context.user_data.pop('pending_ref', None)
+        return
+        
+    c.execute(q("INSERT INTO referrals (invited_id, inviter_id) VALUES (?, ?)"), (user_id, inviter_id))
+    c.execute(q("UPDATE users SET ref_count = ref_count + 1 WHERE user_id=?"), (inviter_id,))
+    if not DATABASE_URL: conn.commit()
+    
+    c.execute(q("SELECT ref_count FROM users WHERE user_id=?"), (inviter_id,))
+    row = c.fetchone()
+    count = row['ref_count'] if DATABASE_URL else row[0]
+    
+    try:
+        await context.bot.send_message(inviter_id, f"🎉 یک کاربر جدید با لینک شما وارد ربات شد و عضو کانال‌ها شد!\n👥 تعداد کل زیرمجموعه‌های شما: {count}")
+        if count == 20: await context.bot.send_message(ADMIN_ID, f"⚠️ کاربر {inviter_id} به ۲۰ زیرمجموعه رسید!")
+    except Exception as e: logger.error(f"Referral notify error: {e}")
+        
+    context.user_data.pop('pending_ref', None)
 
 async def check_membership(user_id, bot):
     not_joined = []
@@ -53,40 +86,39 @@ def main_menu_keyboard():
 
 def admin_menu_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📋 آگهی های ثبت شده", callback_data="admin_ads")], [InlineKeyboardButton("💰 درخواست قیمت گزاری", callback_data="admin_pricing")], [InlineKeyboardButton("🛒 خرید اکانت", callback_data="admin_buy")], [InlineKeyboardButton("❓ سوال های پرسیده شده", callback_data="admin_questions")], [InlineKeyboardButton("🚫 کاربران بن شده", callback_data="admin_bans")], [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")]])
-
-WELCOME = "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi"
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    context.user_data.clear()
+    # context.user_data.clear() رو برداشتیم که pending_ref پاک نشه
+    
     if is_banned(user_id): return await update.message.reply_text("🚫 شما از ربات بن شده اید.")
     
-    c.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    c.execute(q("SELECT user_id FROM users WHERE user_id=?"), (user_id,))
     is_new = not c.fetchone()
-    c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
     
-    if is_new and context.args and context.args[0].startswith("ref_"):
-        inviter_id = int(context.args[0].replace("ref_", ""))
-        if inviter_id != user_id:
-            c.execute("INSERT OR IGNORE INTO referrals (invited_id, inviter_id) VALUES (?, ?)", (user_id, inviter_id))
-            if c.total_changes > 0:
-                conn.commit()
-                c.execute("SELECT COUNT(*) FROM referrals WHERE inviter_id=?", (inviter_id,))
-                count = c.fetchone()[0]
-                c.execute("UPDATE users SET ref_count=? WHERE user_id=?", (count, inviter_id))
-                conn.commit()
-                try:
-                    await context.bot.send_message(inviter_id, f"🎉 یک نفر با لینک شما وارد ربات شد!\nتعداد زیرمجموعه‌های شما: {count}")
-                    if count == 20: await context.bot.send_message(ADMIN_ID, f"⚠️ کاربر {inviter_id} به ۲۰ زیرمجموعه رسید!")
-                except: pass
+    if is_new:
+        c.execute(q("INSERT INTO users (user_id) VALUES (?)"), (user_id,))
+        if not DATABASE_URL: conn.commit()
+        
+    # گرفتن لینک رفرال و ذخیره در حافظه (بدون ثبت فوری)
+    if context.args and context.args[0].startswith("ref_"):
+        try:
+            inviter_id = int(context.args[0].replace("ref_", ""))
+            if inviter_id != user_id:
+                c.execute(q("SELECT user_id FROM users WHERE user_id=?"), (inviter_id,))
+                if c.fetchone():
+                    context.user_data['pending_ref'] = inviter_id
+        except Exception as e: logger.error(f"Referral parse error: {e}")
                 
     if is_admin(user_id): return await show_admin_panel(update, context)
+    
     not_joined = await check_membership(user_id, context.bot)
     if not_joined:
         buttons = [[InlineKeyboardButton(f"🔗 عضویت در {ch}", url=link)] for ch, link in not_joined]
         buttons.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
         return await update.message.reply_text("برای استفاده از ربات ابتدا در کانال‌های زیر عضو شوید:", reply_markup=InlineKeyboardMarkup(buttons))
+        
+    # اگر کاربر از قبل عضو بود، رفرال ثبت میشه
+    await process_pending_referral(user_id, context)
     await update.message.reply_text(WELCOME, reply_markup=main_menu_keyboard())
 
 async def show_admin_panel(update, context):
@@ -107,8 +139,9 @@ async def free_mediator_handler(update, context):
     user_id = query.from_user.id
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    c.execute("SELECT ref_count FROM users WHERE user_id=?", (user_id,))
-    count = c.fetchone()[0] or 0
+    c.execute(q("SELECT ref_count FROM users WHERE user_id=?"), (user_id,))
+    row = c.fetchone()
+    count = (row['ref_count'] if DATABASE_URL else row[0]) or 0
     text = f"برای واسطه گری رایگان شما باید با لینک خود زیر مجموعه گیری داخل ربات کنید.\n\n🔗 **لینک اختصاصی شما:**\n`{ref_link}`\n\n👥 **تعداد زیرمجموعه‌های شما:** {count} نفر\n\n**لیست معامله‌ها:**\nمعامله 100 هزار تا 400 هزار: 20 زیر مجموعه\nمعامله بالای 400 تا 900 هزار: 30 زیر مجموعه\nمعامله 1 میلیون تا 3 میلیون: 50 زیر مجموعه\nمعامله 4 میلیون تا 10 میلیون: 100 زیر مجموعه\nمعامله های بالای 10 میلیون: 250 زیر مجموعه"
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="restart")]]), parse_mode='Markdown')
 
@@ -155,9 +188,13 @@ async def submit_ad(update, context):
     text = context.user_data.get('ad_text', '')
     if not msg_ids and not text: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
     db_ids = msg_ids + (["text"] if text else [])
-    c.execute("INSERT INTO ads (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, db_ids))))
-    ad_id = c.lastrowid
-    conn.commit()
+    c.execute(q("INSERT INTO ads (user_id, message_ids) VALUES (?, ?)"), (user_id, ','.join(map(str, db_ids))))
+    if not DATABASE_URL: conn.commit()
+    
+    c.execute(q("SELECT id FROM ads WHERE user_id=? ORDER BY id DESC LIMIT 1"), (user_id,))
+    row = c.fetchone()
+    ad_id = row['id'] if DATABASE_URL else row[0]
+    
     admin_msg_ids = []
     if text:
         m = await context.bot.send_message(ADMIN_ID, text)
@@ -167,8 +204,8 @@ async def submit_ad(update, context):
             fwd = await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=user_id, message_id=mid)
             admin_msg_ids.append(fwd.message_id)
         except: pass
-    c.execute("UPDATE ads SET admin_msg_ids=? WHERE id=?", (','.join(map(str, admin_msg_ids)), ad_id))
-    conn.commit()
+    c.execute(q("UPDATE ads SET admin_msg_ids=? WHERE id=?"), (','.join(map(str, admin_msg_ids)), ad_id))
+    if not DATABASE_URL: conn.commit()
     try: await context.bot.send_message(ADMIN_ID, f"📝 آگهی جدید #{ad_id}\nاز کاربر: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تایید و ارسال به چنل", callback_data=f"approve_ad_{ad_id}"), InlineKeyboardButton("❌ رد", callback_data=f"reject_ad_{ad_id}")], [InlineKeyboardButton("🚫 بن کردن کاربر", callback_data=f"ban_{user_id}")]]))
     except: pass
     await query.edit_message_text("فرم شما ارسال شد ✅🌹\n\nزمان تقریبی اگهی: بین بیست دقیقه تا یک ساعت⏰\nپس از بررسی نتیجه به شما اطلاع داده میشود.")
@@ -182,9 +219,13 @@ async def submit_pricing(update, context):
     text = context.user_data.get('pricing_text', '')
     if not msg_ids and not text: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
     db_ids = msg_ids + (["text"] if text else [])
-    c.execute("INSERT INTO pricing_requests (user_id, message_ids) VALUES (?, ?)", (user_id, ','.join(map(str, db_ids))))
-    req_id = c.lastrowid
-    conn.commit()
+    c.execute(q("INSERT INTO pricing_requests (user_id, message_ids) VALUES (?, ?)"), (user_id, ','.join(map(str, db_ids))))
+    if not DATABASE_URL: conn.commit()
+    
+    c.execute(q("SELECT id FROM pricing_requests WHERE user_id=? ORDER BY id DESC LIMIT 1"), (user_id,))
+    row = c.fetchone()
+    req_id = row['id'] if DATABASE_URL else row[0]
+
     admin_msg_ids = []
     if text:
         m = await context.bot.send_message(ADMIN_ID, text)
@@ -194,8 +235,8 @@ async def submit_pricing(update, context):
             fwd = await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=user_id, message_id=mid)
             admin_msg_ids.append(fwd.message_id)
         except: pass
-    c.execute("UPDATE pricing_requests SET admin_msg_ids=? WHERE id=?", (','.join(map(str, admin_msg_ids)), req_id))
-    conn.commit()
+    c.execute(q("UPDATE pricing_requests SET admin_msg_ids=? WHERE id=?"), (','.join(map(str, admin_msg_ids)), req_id))
+    if not DATABASE_URL: conn.commit()
     try: await context.bot.send_message(ADMIN_ID, f"💰 درخواست قیمت گزاری #{req_id}\nاز کاربر: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💵 ارسال قیمت", callback_data=f"send_price_{req_id}"), InlineKeyboardButton("❌ رد", callback_data=f"reject_pricing_{req_id}")], [InlineKeyboardButton("🚫 بن کردن کاربر", callback_data=f"ban_{user_id}")]]))
     except: pass
     await query.edit_message_text("اطلاعات شما دریافت شد ✅\nنهایتا تا یک الی دو ساعت قیمت تقریبی اکانت برای شما ارسال میشود.")
@@ -208,26 +249,29 @@ async def submit_buy(update, context):
     msg_ids = context.user_data.get('buy_messages', [])
     link_text = context.user_data.get('buy_link', '')
     if not msg_ids: return await query.edit_message_text("هیچ محتوایی دریافت نشد.")
-    c.execute("INSERT INTO buy_requests (user_id, message_ids, link) VALUES (?, ?, ?)", (user_id, ','.join(map(str, msg_ids)), link_text))
-    req_id = c.lastrowid
-    conn.commit()
+    c.execute(q("INSERT INTO buy_requests (user_id, message_ids, link) VALUES (?, ?, ?)"), (user_id, ','.join(map(str, msg_ids)), link_text))
+    if not DATABASE_URL: conn.commit()
+    
+    c.execute(q("SELECT id FROM buy_requests WHERE user_id=? ORDER BY id DESC LIMIT 1"), (user_id,))
+    row = c.fetchone()
+    req_id = row['id'] if DATABASE_URL else row[0]
+
     admin_msg_ids = []
     for mid in msg_ids:
         try:
             fwd = await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=user_id, message_id=mid)
             admin_msg_ids.append(fwd.message_id)
         except: pass
-    c.execute("UPDATE buy_requests SET admin_msg_ids=? WHERE id=?", (','.join(map(str, admin_msg_ids)), req_id))
-    conn.commit()
+    c.execute(q("UPDATE buy_requests SET admin_msg_ids=? WHERE id=?"), (','.join(map(str, admin_msg_ids)), req_id))
+    if not DATABASE_URL: conn.commit()
     try: await context.bot.send_message(ADMIN_ID, f"🛒 درخواست خرید #{req_id}\nاز کاربر: {user_id}\n\nلینک: {link_text}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 ارسال پاسخ", callback_data=f"reply_buy_{req_id}")], [InlineKeyboardButton("🚫 بن کردن کاربر", callback_data=f"ban_{user_id}")]]))
     except: pass
     await query.edit_message_text("لینک شما دریافت شد ✅\nپس از استعلام به شما اطلاع داده میشود.")
     context.user_data.clear()
-
-async def ban_user_action(update, context, target_id):
+    async def ban_user_action(update, context, target_id):
     query = update.callback_query
-    c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (target_id,))
-    conn.commit()
+    c.execute(q("UPDATE users SET is_banned=1 WHERE user_id=?"), (target_id,))
+    if not DATABASE_URL: conn.commit()
     try: await context.bot.ban_chat_member(chat_id=target_id, user_id=target_id)
     except: pass
     for ch, _ in CHANNELS:
@@ -239,12 +283,12 @@ async def ban_user_action(update, context, target_id):
 
 async def admin_show_bans(update, context):
     query = update.callback_query
-    c.execute("SELECT user_id FROM users WHERE is_banned=1")
+    c.execute(q("SELECT user_id FROM users WHERE is_banned=1"))
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("🚫 هیچ کاربر بن شده‌ای وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
     text, buttons = "🚫 لیست کاربران بن شده:\n\n", []
     for row in rows:
-        uid = row[0]
+        uid = row['user_id'] if DATABASE_URL else row[0]
         text += f"کاربر: {uid}\n"
         buttons.append([InlineKeyboardButton(f"رفع بن {uid}", callback_data=f"unban_{uid}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")])
@@ -252,8 +296,8 @@ async def admin_show_bans(update, context):
 
 async def unban_user_action(update, context, target_id):
     query = update.callback_query
-    c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (target_id,))
-    conn.commit()
+    c.execute(q("UPDATE users SET is_banned=0 WHERE user_id=?"), (target_id,))
+    if not DATABASE_URL: conn.commit()
     for ch, _ in CHANNELS:
         try: await context.bot.unban_chat_member(chat_id=ch, user_id=target_id)
         except: pass
@@ -264,66 +308,74 @@ async def unban_user_action(update, context, target_id):
 
 async def approve_ad(update, context, ad_id):
     query = update.callback_query
-    c.execute("SELECT user_id, admin_msg_ids, status FROM ads WHERE id=?", (ad_id,))
+    c.execute(q("SELECT user_id, admin_msg_ids, status FROM ads WHERE id=?"), (ad_id,))
     row = c.fetchone()
-    if not row or row[2] != 'pending': return
-    user_id, admin_msg_ids_str, status = row
+    if not row or (row['status'] if DATABASE_URL else row[2]) != 'pending': return
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    admin_msg_ids_str = row['admin_msg_ids'] if DATABASE_URL else row[1]
     for amid in [int(x) for x in admin_msg_ids_str.split(',') if x]:
         try: await context.bot.copy_message(chat_id=AD_CHANNEL_ID, from_chat_id=ADMIN_ID, message_id=amid)
         except: pass
-    c.execute("UPDATE ads SET status='approved' WHERE id=?", (ad_id,))
-    conn.commit()
+    c.execute(q("UPDATE ads SET status='approved' WHERE id=?"), (ad_id,))
+    if not DATABASE_URL: conn.commit()
     try: await context.bot.send_message(user_id, f"✅ آگهی شما (#{ad_id}) تایید و در چنل منتشر شد.")
     except: pass
     await query.edit_message_text(f"✅ آگهی #{ad_id} تایید شد.")
 
 async def reject_ad(update, context, ad_id):
     query = update.callback_query
-    c.execute("SELECT user_id, status FROM ads WHERE id=?", (ad_id,))
+    c.execute(q("SELECT user_id, status FROM ads WHERE id=?"), (ad_id,))
     row = c.fetchone()
-    if not row or row[1] != 'pending': return
-    c.execute("UPDATE ads SET status='rejected' WHERE id=?", (ad_id,))
-    conn.commit()
-    try: await context.bot.send_message(row[0], f"❌ آگهی شما (#{ad_id}) رد شد.")
+    if not row or (row['status'] if DATABASE_URL else row[1]) != 'pending': return
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    c.execute(q("UPDATE ads SET status='rejected' WHERE id=?"), (ad_id,))
+    if not DATABASE_URL: conn.commit()
+    try: await context.bot.send_message(user_id, f"❌ آگهی شما (#{ad_id}) رد شد.")
     except: pass
     await query.edit_message_text(f"❌ آگهی #{ad_id} رد شد.")
 
 async def start_send_price(update, context, req_id):
     query = update.callback_query
-    c.execute("SELECT user_id, status FROM pricing_requests WHERE id=?", (req_id,))
+    c.execute(q("SELECT user_id, status FROM pricing_requests WHERE id=?"), (req_id,))
     row = c.fetchone()
-    if not row or row[1] != 'pending': return
-    context.user_data['admin_send_price_for'] = {'user_id': row[0], 'request_id': req_id}
+    if not row or (row['status'] if DATABASE_URL else row[1]) != 'pending': return
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    context.user_data['admin_send_price_for'] = {'user_id': user_id, 'request_id': req_id}
     context.user_data['state'] = 'admin_send_price'
-    await query.edit_message_text(f"قیمت اکانت را برای کاربر {row[0]} تایپ و ارسال کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
+    await query.edit_message_text(f"قیمت اکانت را برای کاربر {user_id} تایپ و ارسال کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
 
 async def reject_pricing(update, context, req_id):
     query = update.callback_query
-    c.execute("SELECT user_id FROM pricing_requests WHERE id=?", (req_id,))
+    c.execute(q("SELECT user_id FROM pricing_requests WHERE id=?"), (req_id,))
     row = c.fetchone()
     if not row: return
-    c.execute("UPDATE pricing_requests SET status='rejected' WHERE id=?", (req_id,))
-    conn.commit()
-    try: await context.bot.send_message(row[0], f"❌ درخواست قیمت گزاری شما (#{req_id}) رد شد.")
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    c.execute(q("UPDATE pricing_requests SET status='rejected' WHERE id=?"), (req_id,))
+    if not DATABASE_URL: conn.commit()
+    try: await context.bot.send_message(user_id, f"❌ درخواست قیمت گزاری شما (#{req_id}) رد شد.")
     except: pass
     await query.edit_message_text(f"❌ درخواست #{req_id} رد شد.")
 
 async def start_reply_buy(update, context, req_id):
     query = update.callback_query
-    c.execute("SELECT user_id FROM buy_requests WHERE id=?", (req_id,))
+    c.execute(q("SELECT user_id FROM buy_requests WHERE id=?"), (req_id,))
     row = c.fetchone()
     if not row: return
-    context.user_data['admin_reply_buy_for'] = {'user_id': row[0], 'request_id': req_id}
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    context.user_data['admin_reply_buy_for'] = {'user_id': user_id, 'request_id': req_id}
     context.user_data['state'] = 'admin_reply_buy'
-    await query.edit_message_text(f"پاسخ خود را برای کاربر {row[0]} تایپ کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
+    await query.edit_message_text(f"پاسخ خود را برای کاربر {user_id} تایپ کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
 
 async def admin_show_ads(update, context):
     query = update.callback_query
-    c.execute("SELECT id, user_id, status FROM ads ORDER BY id DESC LIMIT 30")
+    c.execute(q("SELECT id, user_id, status FROM ads ORDER BY id DESC LIMIT 30"))
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("هیچ آگهی ثبت نشده است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
     text, buttons = "📋 آگهی های ثبت شده:\n\n", []
-    for ad_id, user_id, status in rows:
+    for row in rows:
+        ad_id = row['id'] if DATABASE_URL else row[0]
+        user_id = row['user_id'] if DATABASE_URL else row[1]
+        status = row['status'] if DATABASE_URL else row[2]
         text += f"{'⏳' if status == 'pending' else ('✅' if status == 'approved' else '❌')} #{ad_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"مدیریت #{ad_id}", callback_data=f"manage_ad_{ad_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")])
@@ -331,18 +383,22 @@ async def admin_show_ads(update, context):
 
 async def admin_manage_ad(update, context, ad_id):
     query = update.callback_query
-    c.execute("SELECT user_id, status FROM ads WHERE id=?", (ad_id,))
+    c.execute(q("SELECT user_id, status FROM ads WHERE id=?"), (ad_id,))
     row = c.fetchone()
-    if not row or row[1] != 'pending': return
-    await query.edit_message_text(f"📝 آگهی #{ad_id} - کاربر {row[0]}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تایید", callback_data=f"approve_ad_{ad_id}"), InlineKeyboardButton("❌ رد", callback_data=f"reject_ad_{ad_id}")], [InlineKeyboardButton("🔙 برگشت", callback_data="admin_ads")]]))
+    if not row or (row['status'] if DATABASE_URL else row[1]) != 'pending': return
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    await query.edit_message_text(f"📝 آگهی #{ad_id} - کاربر {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تایید", callback_data=f"approve_ad_{ad_id}"), InlineKeyboardButton("❌ رد", callback_data=f"reject_ad_{ad_id}")], [InlineKeyboardButton("🔙 برگشت", callback_data="admin_ads")]]))
 
 async def admin_show_pricing(update, context):
     query = update.callback_query
-    c.execute("SELECT id, user_id, status FROM pricing_requests ORDER BY id DESC LIMIT 30")
+    c.execute(q("SELECT id, user_id, status FROM pricing_requests ORDER BY id DESC LIMIT 30"))
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("هیچ درخواستی وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
     text, buttons = "💰 درخواست های قیمت گزاری:\n\n", []
-    for req_id, user_id, status in rows:
+    for row in rows:
+        req_id = row['id'] if DATABASE_URL else row[0]
+        user_id = row['user_id'] if DATABASE_URL else row[1]
+        status = row['status'] if DATABASE_URL else row[2]
         text += f"{'⏳' if status == 'pending' else '✅'} #{req_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"ارسال قیمت #{req_id}", callback_data=f"send_price_{req_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")])
@@ -350,11 +406,14 @@ async def admin_show_pricing(update, context):
 
 async def admin_show_buy(update, context):
     query = update.callback_query
-    c.execute("SELECT id, user_id, status FROM buy_requests ORDER BY id DESC LIMIT 30")
+    c.execute(q("SELECT id, user_id, status FROM buy_requests ORDER BY id DESC LIMIT 30"))
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("هیچ درخواست خریدی وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
     text, buttons = "🛒 درخواست های خرید:\n\n", []
-    for req_id, user_id, status in rows:
+    for row in rows:
+        req_id = row['id'] if DATABASE_URL else row[0]
+        user_id = row['user_id'] if DATABASE_URL else row[1]
+        status = row['status'] if DATABASE_URL else row[2]
         text += f"{'⏳' if status == 'pending' else '✅'} #{req_id} - کاربر {user_id}\n"
         if status == 'pending': buttons.append([InlineKeyboardButton(f"پاسخ #{req_id}", callback_data=f"reply_buy_{req_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")])
@@ -362,12 +421,14 @@ async def admin_show_buy(update, context):
 
 async def admin_show_questions(update, context):
     query = update.callback_query
-    c.execute("SELECT id, user_id, question_text FROM questions WHERE status='pending' ORDER BY id ASC")
+    c.execute(q("SELECT id, user_id, question_text FROM questions WHERE status='pending' ORDER BY id ASC"))
     rows = c.fetchall()
     if not rows: return await query.edit_message_text("❓ هیچ سوال بی‌پاسخی وجود ندارد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")]]))
     text, buttons = "❓ سوالات پرسیده شده:\n\n", []
     for idx, row in enumerate(rows, 1):
-        q_id, user_id, q_text = row
+        q_id = row['id'] if DATABASE_URL else row[0]
+        user_id = row['user_id'] if DATABASE_URL else row[1]
+        q_text = row['question_text'] if DATABASE_URL else row[2]
         text += f"#سوال {idx} (از کاربر {user_id}):\n{q_text}\n\n"
         buttons.append([InlineKeyboardButton(f"پاسخ به #سوال {idx}", callback_data=f"admin_answer_{q_id}"), InlineKeyboardButton(f"🚫 بن", callback_data=f"ban_{user_id}")])
     buttons.append([InlineKeyboardButton("🔙 برگشت", callback_data="admin_back")])
@@ -375,12 +436,14 @@ async def admin_show_questions(update, context):
 
 async def start_answering_question(update, context, q_id):
     query = update.callback_query
-    c.execute("SELECT user_id, question_text, status FROM questions WHERE id=?", (q_id,))
+    c.execute(q("SELECT user_id, question_text, status FROM questions WHERE id=?"), (q_id,))
     row = c.fetchone()
-    if not row or row[2] != 'pending': return await query.answer("قبلاً پاسخ داده شده است.", show_alert=True)
-    context.user_data['admin_answer_q'] = {'user_id': row[0], 'q_id': q_id}
+    if not row or (row['status'] if DATABASE_URL else row[2]) != 'pending': return await query.answer("قبلاً پاسخ داده شده است.", show_alert=True)
+    user_id = row['user_id'] if DATABASE_URL else row[0]
+    q_text = row['question_text'] if DATABASE_URL else row[1]
+    context.user_data['admin_answer_q'] = {'user_id': user_id, 'q_id': q_id}
     context.user_data['state'] = 'admin_answering_q'
-    await query.edit_message_text(f"متن سوال: {row[1]}\n\n✍️ پاسخ را بنویسید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
+    await query.edit_message_text(f"متن سوال: {q_text}\n\n✍️ پاسخ را بنویسید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_back")]]))
 
 async def button_handler(update, context):
     query = update.callback_query
@@ -391,6 +454,9 @@ async def button_handler(update, context):
     
     if data == "check_join":
         if await check_membership(user_id, context.bot): return await query.answer("هنوز عضو نشدید", show_alert=True)
+        
+        # اینجا بعد از اینکه کاربر عضو شد، رفرال رو ثبت میکنیم
+        await process_pending_referral(user_id, context)
         await show_user_menu(update, context)
     elif data == "restart":
         context.user_data.clear()
@@ -438,8 +504,8 @@ async def message_handler(update, context):
         try:
             await context.bot.send_message(info['user_id'], f"💰 قیمت تقریبی اکانت شما:\n\n{msg.text}\n\nجهت خرید و واسطه گری: @Vasete_armin_azizi")
             await msg.reply_text(f"✅ قیمت برای کاربر {info['user_id']} ارسال شد.")
-            c.execute("UPDATE pricing_requests SET status='answered' WHERE id=?", (info['request_id'],))
-            conn.commit()
+            c.execute(q("UPDATE pricing_requests SET status='answered' WHERE id=?"), (info['request_id'],))
+            if not DATABASE_URL: conn.commit()
         except: pass
         context.user_data.clear()
         return
@@ -448,8 +514,8 @@ async def message_handler(update, context):
         try:
             await context.bot.copy_message(chat_id=info['user_id'], from_chat_id=user_id, message_id=msg.message_id)
             await msg.reply_text(f"✅ پاسخ برای کاربر {info['user_id']} ارسال شد.")
-            c.execute("UPDATE buy_requests SET status='answered' WHERE id=?", (info['request_id'],))
-            conn.commit()
+            c.execute(q("UPDATE buy_requests SET status='answered' WHERE id=?"), (info['request_id'],))
+            if not DATABASE_URL: conn.commit()
         except: pass
         context.user_data.clear()
         return
@@ -458,19 +524,20 @@ async def message_handler(update, context):
         try:
             await context.bot.send_message(info['user_id'], f"📬 پاسخ سوال شما:\n\n{msg.text}")
             await msg.reply_text(f"✅ پاسخ برای کاربر {info['user_id']} ارسال شد.")
-            c.execute("UPDATE questions SET status='answered', answer_text=? WHERE id=?", (msg.text, info['q_id']))
-            conn.commit()
+            c.execute(q("UPDATE questions SET status='answered', answer_text=? WHERE id=?"), (msg.text, info['q_id']))
+            if not DATABASE_URL: conn.commit()
         except: pass
         context.user_data.clear()
         return
     if state == 'admin_broadcast' and is_admin(user_id):
-        c.execute("SELECT user_id FROM users WHERE is_banned=0")
+        c.execute(q("SELECT user_id FROM users WHERE is_banned=0"))
         users = c.fetchall()
         success, failed = 0, 0
         progress_msg = await msg.reply_text("⏳ در حال ارسال پیام همگانی...")
         for u in users:
+            uid = u['user_id'] if DATABASE_URL else u[0]
             try:
-                await context.bot.copy_message(chat_id=u[0], from_chat_id=user_id, message_id=msg.message_id)
+                await context.bot.copy_message(chat_id=uid, from_chat_id=user_id, message_id=msg.message_id)
                 success += 1
             except: failed += 1
         await progress_msg.edit_text(f"✅ پایان.\nموفق: {success}\nناموفق: {failed}")
@@ -482,8 +549,8 @@ async def message_handler(update, context):
             buttons.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
             return await msg.reply_text("ابتدا عضو شوید:", reply_markup=InlineKeyboardMarkup(buttons))
     if state == 'question_waiting':
-        c.execute("INSERT INTO questions (user_id, question_text) VALUES (?, ?)", (user_id, msg.text))
-        conn.commit()
+        c.execute(q("INSERT INTO questions (user_id, question_text) VALUES (?, ?)"), (user_id, msg.text))
+        if not DATABASE_URL: conn.commit()
         await msg.reply_text("✅ سوال شما ثبت شد.\nپاسخ ادمین به زودی برای شما ارسال میشود.")
         try: await context.bot.send_message(ADMIN_ID, f"❓ سوال جدید از کاربر {user_id}:\n\n{msg.text}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚫 بن کردن کاربر", callback_data=f"ban_{user_id}")]]))
         except: pass
@@ -545,3 +612,4 @@ async def root(): return {"status": "Bot is running!"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+WELCOME = "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi"
