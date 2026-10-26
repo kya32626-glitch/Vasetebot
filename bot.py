@@ -46,6 +46,11 @@ def extract_clean_form(text):
         if marker in text: text = text.split(marker)[0].strip()
     return text
 
+def get_count(query_str):
+    c.execute(q(f"SELECT COUNT(*) as count FROM {query_str}"))
+    row = c.fetchone()
+    return row['count'] if DATABASE_URL else row[0]
+
 async def check_membership(user_id, bot):
     not_joined = []
     for ch, link in CHANNELS:
@@ -59,7 +64,15 @@ def main_menu_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📞 درخواست واسطه گری", callback_data="mediator")], [InlineKeyboardButton("🆓 واسطه گری رایگان", callback_data="free_mediator")], [InlineKeyboardButton("📝 ثبت اگهی", callback_data="post_ad")], [InlineKeyboardButton("💰 قیمت گزاری روی اکانت", callback_data="pricing")], [InlineKeyboardButton("🛒 خرید اکانت", callback_data="buy_account")], [InlineKeyboardButton("❓ پرسیدن سوال", callback_data="ask_question")], [InlineKeyboardButton("⚠️ گزارش خرابی", callback_data="report")]])
 
 def admin_menu_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📋 آگهی های ثبت شده", callback_data="admin_ads")], [InlineKeyboardButton("💰 درخواست قیمت گزاری", callback_data="admin_pricing")], [InlineKeyboardButton("🛒 خرید اکانت", callback_data="admin_buy")], [InlineKeyboardButton("❓ سوال های پرسیده شده", callback_data="admin_questions")], [InlineKeyboardButton("🚫 کاربران بن شده", callback_data="admin_bans")], [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 آمار کلی ربات", callback_data="admin_stats")],
+        [InlineKeyboardButton("📋 آگهی های ثبت شده", callback_data="admin_ads")],
+        [InlineKeyboardButton("💰 درخواست قیمت گزاری", callback_data="admin_pricing")],
+        [InlineKeyboardButton("🛒 خرید اکانت", callback_data="admin_buy")],
+        [InlineKeyboardButton("❓ سوال های پرسیده شده", callback_data="admin_questions")],
+        [InlineKeyboardButton("🚫 کاربران بن شده", callback_data="admin_bans")],
+        [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")]
+    ])
 
 WELCOME = "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi"
 
@@ -278,6 +291,29 @@ async def unban_user_action(update, context, target_id):
     await query.answer(f"کاربر {target_id} رفع بن شد.", show_alert=True)
     await admin_show_bans(update, context)
 
+async def admin_show_stats(update, context):
+    query = update.callback_query
+    
+    total_users = get_count('users')
+    total_ads = get_count('ads')
+    total_questions = get_count('questions')
+    total_pricing = get_count('pricing_requests')
+    total_buy = get_count('buy_requests')
+    total_bans = get_count('users WHERE is_banned=1')
+    
+    text = (
+        f"📊 **آمار کلی ربات**\n\n"
+        f"👥 تعداد کل کاربران: **{total_users}** نفر\n"
+        f"📝 تعداد کل آگهی‌های ثبت شده: **{total_ads}**\n"
+        f"💰 تعداد درخواست‌های قیمت‌گذاری: **{total_pricing}**\n"
+        f"🛒 تعداد درخواست‌های خرید: **{total_buy}**\n"
+        f"❓ تعداد سوالات/گزارش‌های پرسیده شده: **{total_questions}**\n"
+        f"🚫 تعداد کاربران بن شده: **{total_bans}**\n\n"
+        f"*(آمار به صورت زنده از دیتابیس خوانده می‌شود)*"
+    )
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 برگشت به پنل", callback_data="admin_back")]]), parse_mode='Markdown')
+
 async def approve_ad(update, context, ad_id):
     query = update.callback_query
     c.execute(q("SELECT user_id, admin_msg_ids, status FROM ads WHERE id=?"), (ad_id,))
@@ -442,6 +478,7 @@ async def button_handler(update, context):
     elif data == "submit_pricing": await submit_pricing(update, context)
     elif data == "submit_buy": await submit_buy(update, context)
     elif data == "admin_back": await show_admin_panel(update, context)
+    elif data == "admin_stats": await admin_show_stats(update, context)
     elif data == "admin_ads": await admin_show_ads(update, context)
     elif data == "admin_pricing": await admin_show_pricing(update, context)
     elif data == "admin_buy": await admin_show_buy(update, context)
@@ -578,5 +615,4 @@ async def telegram_webhook(request: Request):
 async def root(): return {"status": "Bot is running!"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
