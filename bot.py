@@ -269,7 +269,7 @@ async def submit_buy(update, context):
     await query.edit_message_text("لینک شما دریافت شد ✅\nپس از استعلام به شما اطلاع داده میشود.")
     context.user_data.clear()
     async def ban_user_action(update, context, target_id):
-    query = update.callback_query
+      query = update.callback_query
     c.execute(q("UPDATE users SET is_banned=1 WHERE user_id=?"), (target_id,))
     if not DATABASE_URL: conn.commit()
     try: await context.bot.ban_chat_member(chat_id=target_id, user_id=target_id)
