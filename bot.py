@@ -1,8 +1,8 @@
 import os, logging, sqlite3
 from fastapi import FastAPI, Request, Response
 import uvicorn
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, LabeledPrice
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, filters, ContextTypes
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,6 +11,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 8396752402
 AD_CHANNEL_ID = "@Vasetearminazizi"
+# آیدی‌هایی که رسید پرداخت استارز برایشان ارسال می‌شود
+STARS_ADMIN_IDS = [7281917579, 8396752402] 
 CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadearminazizi", "https://t.me/etemadearminazizi")]
 
 if DATABASE_URL:
@@ -44,10 +46,9 @@ except Exception:
     if not DATABASE_URL: conn.commit()
 # --------------------------------------------------
 
-# متون پیش فرض
 DEFAULT_TEXTS = {
     "welcome": "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi\n\nسلام %name% عزیز!",
-    "mediator": "قیمت های واسطه گری به این صورت است:\n\nمعامله زیر 50 هزار : رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 50 هزار تا 100 هزار: رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 100 تا 300 : نفری ۱۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 400 تا 900 هزار: نفری ۵۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 1500 تا 3 میل : نفری 100 هزار\n━━━━━━━━━━━━━━━━━\nمعامله ۴ میل تا ۱۰ میل : نفری 350 هزار\n━━━━━━━━━━━━━━━━━\nمعامله های بالای 10 میل: نفری ۵۰۰ هزار\n\nاگر با قیمت ها اوکی بودید گزینه تایید رو بزنید.",
+    "mediator": "قیمت های واسطه گری به این صورت است:\n\nمعامله زیر 50 هزار : رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 50 هزار تا 100 هزار: رایگان\n━━━━━━━━━━━━━━━━━\nمعامله 100 تا 300 : نفری ۱۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 400 تا 900 هزار: نفری ۵۰ هزار\n━━━━━━━━━━━━━━━━━\nمعامله 1500 تا 3 میل : نفری 100 هزار\n━━━━━━━━━━━━━━━━━\nمعامله ۴ میل تا ۱۰ میل : نفری 350 هزار\n━━━━━━━━━━━━━━━━━\nمعامله های بالای 10 میل: نفری ۵۰۰ هزار\n\nاگر با قیمت ها اوکی بودید گزینه تایید رو بزنید.\nهمچنین شما میتوانید از طریق پرداخت استارزی اقدام کنید.",
     "mediator_confirm": "لطفاً اطلاعات زیر را به ایدی زیر ارسال نمایید:\n\n@Vasete_armin_azizi\n\n1_ آیدی شما و طرف مقابل\n2_ فرم اگهی اکانت یا عکس ها\n3_ ارزش اکانت شما\n\n⚠️ توجه داشته باشید تایید دو مرحله اکانت کالاف دیوتی الزامی است.\n\n⚠️ معامله فقط توسط همین آیدی بالا انجام میشود و ربات واسطه گری نمیکند.",
     "post_ad": "📋 فرم ثبت اگهی:\n\nنوع بازی🎮:\nـــــــــــــــــــــــــــــــــــ\n\nسیو ها📥:\nـــــــــــــــــــــــــــــــــ\n\nایا قابل چنج هست:\nتعداد سیپی🪙:\nتعداد گان متیک 🟥:\nتعداد گان لجند 🟨:\nتعداد بتل پس:\nتوضیحات فروشنده:\nUid:\nقیمت:\nآیدی فروشنده:\n\nجهت خرید اکانت اگهی کردن اکانت و قیمت گزاری و درخاست واسطه به بات مراجعه کنید:\n@Vasetearminazizibot\n\nجهت ارتباط با ادمین و واسطه گری اکانت:\n@Vasete_armin_azizi\n\nچنلمون:\nhttps://t.me/Vasetearminazizi\n\nاعتماد:\nhttps://t.me/etemadearminazizi\n\nاطلاعات اکانتتونو در فرم بالا پر کنید و سپس ارسال کنید\n\n❗️ اگر اکانت شما گزینه های زیر رو نداشته باشه آگهی نمیشه:\n1_ آیدی فروشنده الزامیس\n2_ عکس حد اقل 2 و حد اکثر 9 تا\n\nفرم را همراه عکس ها ارسال کنید و پیام اضافه نفرستید.\nممنون از شما %name% ❤️",
     "pricing": "برای قیمت گزاری اکانت اطلاعات زیر را ارسال نمایید:\n\n• عکس های اکانت\n• ایتم ها\n• وضعیت سیو ها\n• سیپی منفی دارد / ندارد\n\nلطفا از ارسال پیام های دیگر خودداری نمایید.\nپس از ارسال اطلاعات نهایتا تا یک الی دو ساعت قیمت تقریبی اکانت برای شما ارسال میشود.",
@@ -57,10 +58,7 @@ DEFAULT_TEXTS = {
 def get_text(key, user_name=""):
     c.execute(q("SELECT value FROM settings WHERE key=?"), (key,))
     row = c.fetchone()
-    if row:
-        txt = row['value'] if DATABASE_URL else row[0]
-    else:
-        txt = DEFAULT_TEXTS.get(key, "")
+    txt = (row['value'] if DATABASE_URL else row[0]) if row else DEFAULT_TEXTS.get(key, "")
     return txt.replace("%name%", user_name)
 
 def set_text(key, value):
@@ -169,21 +167,51 @@ async def show_user_menu(update, context):
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post
     if not post: return
-    
-    # فقط برای کانال مشخص شده
-    if post.chat.username and post.chat.username.lower() != AD_CHANNEL_ID.replace('@', '').lower():
-        return
+    if post.chat.username and post.chat.username.lower() != AD_CHANNEL_ID.replace('@', '').lower(): return
         
     msg_id = post.message_id
     text = f"📢 **پیام جدید در کانال ثبت شد.**\n\nآیا می‌خواهید این پیام به یک پیام شیشه‌ای (دارای دکمه) تبدیل شود؟"
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("بله، شیشه ای شود", callback_data=f"ch_glass_yes_{msg_id}", style="success"), 
-         InlineKeyboardButton("خیر", callback_data=f"ch_glass_no_{msg_id}", style="danger")]
-    ])
-    try:
-        await context.bot.send_message(ADMIN_ID, text, reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Could not send channel post prompt: {e}")
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("بله، شیشه ای شود", callback_data=f"ch_glass_yes_{msg_id}", style="success"), InlineKeyboardButton("خیر", callback_data=f"ch_glass_no_{msg_id}", style="danger")]])
+    try: await context.bot.send_message(ADMIN_ID, text, reply_markup=markup)
+    except Exception as e: logger.error(f"Could not send channel post prompt: {e}")
+
+# ================== بخش پرداخت استارزی ==================
+async def stars_menu(update, context):
+    text = "💳 **پرداخت استارزی واسطه گری**\n\nلطفاً یکی از معامله‌های زیر را برای پرداخت انتخاب کنید:\n"
+    buttons = [
+        [InlineKeyboardButton("معامله 100 تا 400 هزار (20 استارز)", callback_data="pay_stars_20", style="primary")],
+        [InlineKeyboardButton("معامله 400 تا 900 هزار (30 استارز)", callback_data="pay_stars_30", style="primary")],
+        [InlineKeyboardButton("معامله 1 تا 3 میلیون (50 استارز)", callback_data="pay_stars_50", style="primary")],
+        [InlineKeyboardButton("معامله 4 تا 10 میلیون (100 استارز)", callback_data="pay_stars_100", style="primary")],
+        [InlineKeyboardButton("معامله بالای 10 میلیون (250 استارز)", callback_data="pay_stars_250", style="primary")],
+        [InlineKeyboardButton("برگشت", callback_data="mediator", style="danger")]
+    ]
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode='Markdown')
+
+async def send_stars_invoice(update, context, stars_amount):
+    query = update.callback_query
+    await query.answer()
+    title = "واسطه گری رایگان"
+    description = f"پرداخت برای معامله به ارزش {stars_amount} استارز"
+    payload = f"stars_{stars_amount}"
+    prices = [LabeledPrice("واسطه گری", stars_amount)]
+    
+    await context.bot.send_invoice(
+        chat_id=query.from_user.id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token="", # خالی برای استارز
+        currency="XTR",
+        prices=prices
+    )
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if query.invoice_payload.startswith("stars_"):
+        await query.answer(ok=True)
+    else:
+        await query.answer(ok=False, error_message="مشکلی پیش آمده است.")
 
 # ================== بخش تنظیمات متون ==================
 async def admin_settings_menu(update, context):
@@ -206,13 +234,11 @@ async def start_edit_text(update, context, key):
     current_text = get_text(key, "کاربر")
     await query.edit_message_text(f"متن فعلی:\n\n{current_text}\n\n✍️ حالا متن جدید را بفرستید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("لغو", callback_data="admin_settings", style="danger")]]))
 
-# ================== بخش انتقال امتیاز ==================
 async def admin_transfer_start(update, context):
     query = update.callback_query
     context.user_data['state'] = 'admin_transfer_id'
     await query.edit_message_text("🎯 آیدی عددی کاربری که می‌خواهید به او امتیاز بدهید را وارد کنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("لغو", callback_data="admin_back", style="danger")]]))
 
-# ================== بخش پیام همگانی ==================
 async def admin_broadcast_start(update, context):
     query = update.callback_query
     context.user_data['state'] = 'admin_broadcast_msg'
@@ -225,10 +251,14 @@ async def ask_glass_button(update, context, msg):
     buttons = [[InlineKeyboardButton("بله (پیام شیشه‌ای)", callback_data="glass_yes", style="success"), InlineKeyboardButton("خیر (ارسال عادی)", callback_data="glass_no", style="danger")]]
     await msg.reply_text("آیا می‌خواهید این پیام دارای دکمه شیشه‌ای باشد؟", reply_markup=InlineKeyboardMarkup(buttons))
 
-# ================== هندلرهای کاربران ==================
 async def mediator_handler(update, context):
     user_name = update.effective_user.first_name
-    await update.callback_query.edit_message_text(get_text("mediator", user_name), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تایید", callback_data="mediator_confirm", style="success")], [InlineKeyboardButton("برگشت", callback_data="restart", style="danger")]]))
+    text = get_text("mediator", user_name)
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("تایید و ارسال به ادمین", callback_data="mediator_confirm", style="success")], 
+        [InlineKeyboardButton("💳 پرداخت با استارز", callback_data="stars_menu", style="primary")],
+        [InlineKeyboardButton("برگشت", callback_data="restart", style="danger")]
+    ]))
 
 async def mediator_confirm(update, context):
     user_name = update.effective_user.first_name
@@ -594,6 +624,8 @@ async def button_handler(update, context):
         if is_admin(user_id): await show_admin_panel(update, context)
         else: await show_user_menu(update, context)
     elif data == "mediator": await mediator_handler(update, context)
+    elif data == "stars_menu": await stars_menu(update, context)
+    elif data.startswith("pay_stars_"): await send_stars_invoice(update, context, int(data.split('_')[-1]))
     elif data == "free_mediator": await free_mediator_handler(update, context)
     elif data == "mediator_confirm": await mediator_confirm(update, context)
     elif data == "post_ad": await post_ad_handler(update, context)
@@ -660,8 +692,20 @@ async def message_handler(update, context):
     msg = update.message
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
+    
     if is_banned(user_id): return await msg.reply_text("🚫 شما از ربات بن شده اید.")
     
+    # --- پرداخت موفق استارز ---
+    if msg.successful_payment:
+        stars = msg.successful_payment.total_amount
+        # ارسال رسید به ادمین‌های استارز
+        for admin_star_id in STARS_ADMIN_IDS:
+            try:
+                await context.bot.send_message(admin_star_id, f"💰 **پرداخت استارزی جدید!**\n\n👤 کاربر: {user_name}\n🆔 آیدی: `{user_id}`\n⭐️ تعداد استارز: {stars}", parse_mode='Markdown')
+            except: pass
+        await msg.reply_text(f"✅ پرداخت شما به مبلغ {stars} استارز با موفقیت انجام شد. واسطه گری شما ثبت گردید و به زودی با شما تماس گرفته می‌شود.")
+        return
+
     state = context.user_data.get('state')
     if not state: return
 
@@ -842,9 +886,10 @@ async def message_handler(update, context):
 app = FastAPI()
 bot_app = Application.builder().token(BOT_TOKEN).updater(None).build()
 bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler)) # هندلر کانال
+bot_app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+bot_app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler))
 bot_app.add_handler(CallbackQueryHandler(button_handler))
-bot_app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VIDEO) & ~filters.COMMAND, message_handler))
+bot_app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.SUCCESSFUL_PAYMENT) & ~filters.COMMAND, message_handler))
 
 @app.on_event("startup")
 async def on_startup():
