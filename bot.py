@@ -35,6 +35,15 @@ c.execute(q('''CREATE TABLE IF NOT EXISTS buy_requests (id SERIAL PRIMARY KEY, u
 c.execute(q('''CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, user_id BIGINT, question_text TEXT, answer_text TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''))
 if not DATABASE_URL: conn.commit()
 
+# --- اضافه کردن خودکار ستون امتیاز در صورت نیاز ---
+try:
+    c.execute(q("SELECT points FROM users LIMIT 1"))
+except Exception:
+    if DATABASE_URL: conn.rollback()
+    c.execute(q("ALTER TABLE users ADD COLUMN points INT DEFAULT 0"))
+    if not DATABASE_URL: conn.commit()
+# --------------------------------------------------
+
 # متون پیش فرض
 DEFAULT_TEXTS = {
     "welcome": "این تنها ربات پاسخگویی واسطه گری آرمین عزیزی است\nآیدی ادمین واسطه: @Vasete_armin_azizi\n\nسلام %name% عزیز!",
@@ -155,6 +164,26 @@ async def show_user_menu(update, context):
     user_name = update.effective_user.first_name if not update.callback_query else update.callback_query.from_user.first_name
     if update.callback_query: await update.callback_query.edit_message_text(get_text("welcome", user_name), reply_markup=main_menu_keyboard())
     else: await update.message.reply_text(get_text("welcome", user_name), reply_markup=main_menu_keyboard())
+
+# ================== هندلر کانال (پیام شیشه ای کانال) ==================
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = update.channel_post
+    if not post: return
+    
+    # فقط برای کانال مشخص شده
+    if post.chat.username and post.chat.username.lower() != AD_CHANNEL_ID.replace('@', '').lower():
+        return
+        
+    msg_id = post.message_id
+    text = f"📢 **پیام جدید در کانال ثبت شد.**\n\nآیا می‌خواهید این پیام به یک پیام شیشه‌ای (دارای دکمه) تبدیل شود؟"
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("بله، شیشه ای شود", callback_data=f"ch_glass_yes_{msg_id}", style="success"), 
+         InlineKeyboardButton("خیر", callback_data=f"ch_glass_no_{msg_id}", style="danger")]
+    ])
+    try:
+        await context.bot.send_message(ADMIN_ID, text, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Could not send channel post prompt: {e}")
 
 # ================== بخش تنظیمات متون ==================
 async def admin_settings_menu(update, context):
@@ -555,7 +584,7 @@ async def button_handler(update, context):
     await query.answer()
     data = query.data
     user_id = query.from_user.id
-    if any(data.startswith(p) for p in ('approve_ad_', 'reject_ad_', 'send_price_', 'reject_pricing_', 'reply_buy_', 'manage_ad_', 'admin_', 'admin_answer_', 'ban_', 'unban_', 'edit_ad_', 'edit_txt_', 'glass_yes', 'glass_no')) and not is_admin(user_id): return await query.answer("دسترسی ندارید", show_alert=True)
+    if any(data.startswith(p) for p in ('approve_ad_', 'reject_ad_', 'send_price_', 'reject_pricing_', 'reply_buy_', 'manage_ad_', 'admin_', 'admin_answer_', 'ban_', 'unban_', 'edit_ad_', 'edit_txt_', 'glass_yes', 'glass_no', 'ch_glass_')) and not is_admin(user_id): return await query.answer("دسترسی ندارید", show_alert=True)
     
     if data == "check_join":
         if await check_membership(user_id, context.bot): return await query.answer("هنوز عضو نشدید", show_alert=True)
@@ -605,6 +634,13 @@ async def button_handler(update, context):
         await query.edit_message_text("⏳ در حال ارسال پیام همگانی (بدون دکمه)...")
         await do_broadcast(context, msg_id, None)
         await query.edit_message_text("✅ پیام همگانی ارسال شد.")
+    elif data.startswith("ch_glass_no_"):
+        await query.edit_message_text("❌ لغو شد. پیام کانال بدون تغییر ماند.")
+    elif data.startswith("ch_glass_yes_"):
+        msg_id = int(data.split('_')[-1])
+        context.user_data['ch_msg_id'] = msg_id
+        context.user_data['state'] = 'admin_ch_glass_txt'
+        await query.edit_message_text("✍️ متن دکمه شیشه‌ای را بنویسید (پیش‌فرض: ورود به بات واسطه گری):")
 
 async def do_broadcast(context, msg_id, btn_markup):
     c.execute(q("SELECT user_id FROM users WHERE is_banned=0"))
@@ -615,7 +651,9 @@ async def do_broadcast(context, msg_id, btn_markup):
         try:
             await context.bot.copy_message(chat_id=uid, from_chat_id=ADMIN_ID, message_id=msg_id, reply_markup=btn_markup)
             success += 1
-        except: failed += 1
+        except Exception as e:
+            logger.error(f"Broadcast error for {uid}: {e}")
+            failed += 1
     return success, failed
 
 async def message_handler(update, context):
@@ -626,6 +664,28 @@ async def message_handler(update, context):
     
     state = context.user_data.get('state')
     if not state: return
+
+    # --- هندلرهای کانال (پیام شیشه ای) ---
+    if state == 'admin_ch_glass_txt' and is_admin(user_id):
+        context.user_data['ch_btn_txt'] = msg.text
+        context.user_data['state'] = 'admin_ch_glass_url'
+        bot_username = (await context.bot.get_me()).username
+        await msg.reply_text(f"🔗 لینک دکمه را وارد کنید (مثلاً: https://t.me/{bot_username}):")
+        return
+        
+    if state == 'admin_ch_glass_url' and is_admin(user_id):
+        url = msg.text
+        if not url.startswith("http"): url = "https://" + url
+        btn_txt = context.user_data['ch_btn_txt']
+        msg_id = context.user_data['ch_msg_id']
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_txt, url=url, style="primary")]])
+        try:
+            await context.bot.edit_message_reply_markup(chat_id=AD_CHANNEL_ID, message_id=msg_id, reply_markup=markup)
+            await msg.reply_text("✅ پیام کانال با موفقیت به شیشه‌ای تبدیل شد.")
+        except Exception as e:
+            await msg.reply_text(f"❌ خطا در ویرایش پیام کانال: {e}")
+        context.user_data.clear()
+        return
 
     # --- هندلرهای تنظیمات ---
     if state == 'admin_editing_text' and is_admin(user_id):
@@ -662,16 +722,13 @@ async def message_handler(update, context):
         
     if state == 'admin_editing_ad' and is_admin(user_id):
         ad_id = context.user_data['edit_ad_id']
-        # به روزرسانی آگهی در دیتابیس
         c.execute(q("SELECT message_ids FROM ads WHERE id=?"), (ad_id,))
         row = c.fetchone()
         if row:
             old_ids = (row['message_ids'] if DATABASE_URL else row[0]).split(',')
-            # جایگزینی متن
             new_ids = [x for x in old_ids if x != 'text']
             c.execute(q("UPDATE ads SET message_ids=? WHERE id=?"), (','.join(new_ids + ['text']), ad_id))
             if not DATABASE_URL: conn.commit()
-            # ارسال متن جدید به ادمین
             await context.bot.send_message(ADMIN_ID, f"📝 متن ویرایش شده برای آگهی #{ad_id}:\n\n{msg.text}")
             await msg.reply_text("✅ متن آگهی ویرایش شد. اکنون می‌توانید آن را تایید کنید.")
         else: await msg.reply_text("آگهی یافت نشد.")
@@ -695,7 +752,6 @@ async def message_handler(update, context):
         if not btn_url.startswith("http"): btn_url = "https://" + btn_url
         btn_txt = context.user_data['broadcast_data']['btn_txt']
         msg_id = context.user_data['broadcast_data']['msg_id']
-        
         markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_txt, url=btn_url, style="success")]])
         context.user_data['state'] = None
         await msg.reply_text("⏳ در حال ارسال پیام همگانی (با دکمه)...")
@@ -786,6 +842,7 @@ async def message_handler(update, context):
 app = FastAPI()
 bot_app = Application.builder().token(BOT_TOKEN).updater(None).build()
 bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler)) # هندلر کانال
 bot_app.add_handler(CallbackQueryHandler(button_handler))
 bot_app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VIDEO) & ~filters.COMMAND, message_handler))
 
