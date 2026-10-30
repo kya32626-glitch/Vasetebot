@@ -250,7 +250,7 @@ async def img_photos_done(update, context):
 
 async def generate_ad_image(update, context):
     user_data = context.user_data['img_data']
-    photo_id = context.user_data['img_photos'][0]
+    photos = context.user_data['img_photos']
     msg = await update.message.reply_text("⏳ در حال ساخت تصویر آگهی... لطفاً صبر کنید.")
     
     try:
@@ -275,58 +275,70 @@ async def generate_ad_image(update, context):
                 raise Exception(f"خطای دانلود فونت (کد {rf.status_code})")
             with open("font.ttf", "wb") as f: f.write(rf.content)
 
-        # 3. دانلود عکس کاربر
-        file = await context.bot.get_file(photo_id)
-        await file.download_to_drive("user_photo.jpg")
-        user_img = Image.open("user_photo.jpg").convert("RGBA")
+        # 3. قرار دادن عکس‌ها (پشتیبانی از چند عکس به صورت کلاژ)
+        count = len(photos)
+        if count == 1: cols, rows = 1, 1
+        elif count == 2: cols, rows = 1, 2
+        elif count <= 4: cols, rows = 2, 2
+        else: cols, rows = 3, 3 # برای 5 تا 9 عکس
         
-        # 4. آماده‌سازی بوم
-        draw = ImageDraw.Draw(template)
+        cell_w = 850 // cols
+        cell_h = 980 // rows
         
-        # 5. قرار دادن عکس کاربر (با ImageOps.pad برای اینکه برش نخوره)
-        target_width, target_height = 850, 980
-        user_img = ImageOps.pad(user_img, (target_width, target_height), color="black", method=Image.Resampling.LANCZOS)
-        template.paste(user_img, (20, 20))
-        
-        # 6. آماده سازی فونت (سایز کوچیکتر تا تو کادر جا بشه)
+        for idx, pid in enumerate(photos[:9]): # نهایتا 9 عکس
+            file = await context.bot.get_file(pid)
+            p_bytes = await file.download_as_bytearray()
+            p_img = Image.open(io.BytesIO(p_bytes)).convert("RGBA")
+            
+            # قرار دادن کامل عکس در سلول خودش
+            p_img = ImageOps.pad(p_img, (cell_w, cell_h), color="black", method=Image.Resampling.LANCZOS)
+            
+            r_idx = idx // cols
+            c_idx = idx % cols
+            x = 20 + (c_idx * cell_w)
+            y = 20 + (r_idx * cell_h)
+            template.paste(p_img, (x, y))
+
+        # 4. آماده‌سازی فونت (سایز طبیعی تر)
         try:
-            font_main = ImageFont.truetype("font.ttf", 26)
+            font_main = ImageFont.truetype("font.ttf", 24)
             font_price = ImageFont.truetype("font.ttf", 34)
         except Exception as e:
             raise Exception(f"خطای خواندن فونت: {e}")
+
+        draw = ImageDraw.Draw(template)
         
-        # 7. مختصات دقیق مرکز هر کادر (بر اساس X و Y هایی که دادی)
-        positions = [
-            (1215, 190), # متیک اسکین
-            (1215, 270), # متیک گان
-            (1215, 350), # گلد
-            (1215, 430), # آی دی
-            (1215, 510), # دایموند
-            (1215, 590), # لجند گان
-            (1215, 670), # لجند اسکین
-            (1215, 750), # سی پی
-            (1215, 857)  # قیمت
-        ]
-        
-        # 8. نوشتن متن ها
-        for i, (key, _) in enumerate(QUESTIONS):
+        # 5. مختصاتی که خودت دادی
+        points = {
+            "mythic_skin": (1045, 190),
+            "mythic_gun": (1045, 270),
+            "gold": (1045, 350),
+            "uid": (1045, 430),
+            "diamond": (1045, 510),
+            "legend_gun": (1045, 590),
+            "legend_skin": (1045, 670),
+            "cp": (1045, 750),
+            "price": (1045, 860)
+        }
+
+        # 6. نوشتن متن ها دقیقا روی مختصات
+        for key, _ in QUESTIONS:
             val = user_data.get(key, "")
             reshaped_text = arabic_reshaper.reshape(val)
             bidi_text = get_display(reshaped_text)
             
-            # انتخاب فونت (قیمت فونت بزرگتر داره)
+            pos = points.get(key, (1045, 500))
             current_font = font_price if key == "price" else font_main
             
-            # anchor="mm" یعنی متن دقیقاً در مرکز X و Y قرار بگیره
-            draw.text(positions[i], bidi_text, font=current_font, fill=(255, 215, 0), anchor="mm")
+            # anchor="mm" = دقیقا وسط نقطه تعیین شده
+            draw.text(pos, bidi_text, font=current_font, fill=(255, 215, 0), anchor="mm")
             
-        # 9. ذخیره و ارسال (با بالاترین کیفیت)
+        # 7. ذخیره و ارسال (با بالاترین کیفیت)
         template.convert("RGB").save("final_ad.jpg", quality=100, subsampling=0)
         with open("final_ad.jpg", "rb") as f:
             await msg.reply_photo(photo=f, caption="✅ تصویر آگهی شما با موفقیت ساخته شد!")
             
-        os.remove("user_photo.jpg")
-        os.remove("final_ad.jpg")
+        if os.path.exists("final_ad.jpg"): os.remove("final_ad.jpg")
         
     except Exception as e:
         logger.error(f"Image gen error: {e}")
