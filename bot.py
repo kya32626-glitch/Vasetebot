@@ -283,36 +283,42 @@ async def generate_ad_image(update, context):
         # 4. آماده‌سازی بوم
         draw = ImageDraw.Draw(template)
         
-        # 5. قرار دادن عکس کاربر در سمت چپ (کامل و بدون برش)
+        # 5. قرار دادن عکس کاربر (با ImageOps.pad برای اینکه برش نخوره)
         target_width, target_height = 850, 980
         user_img = ImageOps.pad(user_img, (target_width, target_height), color="black", method=Image.Resampling.LANCZOS)
         template.paste(user_img, (20, 20))
         
-        # 6. آماده سازی فونت
+        # 6. آماده سازی فونت (سایز کوچیکتر تا تو کادر جا بشه)
         try:
-            font = ImageFont.truetype("font.ttf", 38)
+            font_main = ImageFont.truetype("font.ttf", 26)
+            font_price = ImageFont.truetype("font.ttf", 34)
         except Exception as e:
             raise Exception(f"خطای خواندن فونت: {e}")
         
-        # 7. مختصات جدید (X=1480 یعنی چسبیده به لبه راست، اصلا نمیره سمت عکس)
+        # 7. مختصات دقیق مرکز هر کادر (بر اساس X و Y هایی که دادی)
         positions = [
-            (1480, 215), # اسکین متیک
-            (1480, 285), # گان متیک
-            (1480, 355), # گلد
-            (1480, 425), # UID
-            (1480, 495), # دایموند
-            (1480, 565), # گان لجند
-            (1480, 635), # اسکین لجند
-            (1480, 705), # سیپی
-            (1450, 850)  # قیمت (مختصات X کمی کمتر چون کادر قیمت بزرگتره)
+            (1215, 190), # متیک اسکین
+            (1215, 270), # متیک گان
+            (1215, 350), # گلد
+            (1215, 430), # آی دی
+            (1215, 510), # دایموند
+            (1215, 590), # لجند گان
+            (1215, 670), # لجند اسکین
+            (1215, 750), # سی پی
+            (1215, 857)  # قیمت
         ]
         
-        # 8. نوشتن متن ها (anchor="rm" یعنی از سمت راست بچسبه به X)
+        # 8. نوشتن متن ها
         for i, (key, _) in enumerate(QUESTIONS):
             val = user_data.get(key, "")
             reshaped_text = arabic_reshaper.reshape(val)
             bidi_text = get_display(reshaped_text)
-            draw.text(positions[i], bidi_text, font=font, fill=(255, 215, 0), anchor="rm")
+            
+            # انتخاب فونت (قیمت فونت بزرگتر داره)
+            current_font = font_price if key == "price" else font_main
+            
+            # anchor="mm" یعنی متن دقیقاً در مرکز X و Y قرار بگیره
+            draw.text(positions[i], bidi_text, font=current_font, fill=(255, 215, 0), anchor="mm")
             
         # 9. ذخیره و ارسال (با بالاترین کیفیت)
         template.convert("RGB").save("final_ad.jpg", quality=100, subsampling=0)
