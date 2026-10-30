@@ -283,7 +283,7 @@ async def generate_ad_image(update, context):
         # 4. آماده‌سازی بوم
         draw = ImageDraw.Draw(template)
         
-        # 5. قرار دادن عکس کاربر (با متد pad برای اینکه کامل دیده بشه و برش نخوره)
+        # 5. قرار دادن عکس کاربر در سمت چپ (کامل و بدون برش)
         target_width, target_height = 850, 980
         user_img = ImageOps.pad(user_img, (target_width, target_height), color="black", method=Image.Resampling.LANCZOS)
         template.paste(user_img, (20, 20))
@@ -294,20 +294,20 @@ async def generate_ad_image(update, context):
         except Exception as e:
             raise Exception(f"خطای خواندن فونت: {e}")
         
-        # 7. مختصات دقیق قرارگیری متن (اصلاح شده)
+        # 7. مختصات جدید (X=1480 یعنی چسبیده به لبه راست، اصلا نمیره سمت عکس)
         positions = [
-            (1380, 210), # اسکین متیک
-            (1380, 282), # گان متیک
-            (1380, 355), # گلد
-            (1380, 428), # UID
-            (1380, 500), # دایموند
-            (1380, 570), # گان لجند
-            (1380, 642), # اسکین لجند
-            (1380, 712), # سیپی
-            (1300, 845)  # قیمت (کمی به چپ تر چون کادرش فرق داره)
+            (1480, 215), # اسکین متیک
+            (1480, 285), # گان متیک
+            (1480, 355), # گلد
+            (1480, 425), # UID
+            (1480, 495), # دایموند
+            (1480, 565), # گان لجند
+            (1480, 635), # اسکین لجند
+            (1480, 705), # سیپی
+            (1450, 850)  # قیمت (مختصات X کمی کمتر چون کادر قیمت بزرگتره)
         ]
         
-        # 8. نوشتن متن ها
+        # 8. نوشتن متن ها (anchor="rm" یعنی از سمت راست بچسبه به X)
         for i, (key, _) in enumerate(QUESTIONS):
             val = user_data.get(key, "")
             reshaped_text = arabic_reshaper.reshape(val)
