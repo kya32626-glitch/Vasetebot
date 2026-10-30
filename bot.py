@@ -207,6 +207,7 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.invoice_payload.startswith("stars_"): await query.answer(ok=True)
     else: await query.answer(ok=False, error_message="مشکلی پیش آمده است.")
 
+# --- بخش ساخت عکس آگهی ---
 QUESTIONS = [
     ("mythic_skin", "تعداد اسکین های متیک:"),
     ("mythic_gun", "تعداد گان های متیک:"),
@@ -260,7 +261,7 @@ async def generate_ad_image(update, context):
         # 1. دانلود قالب
         r = requests.get(TEMPLATE_URL, headers=headers, timeout=15)
         if r.status_code != 200:
-            raise Exception(f"خطای دانلود عکس قالب (کد {r.status_code}). لینک مستقیم را چک کنید.")
+            raise Exception(f"خطای دانلود عکس قالب (کد {r.status_code}).")
         
         try:
             template = Image.open(io.BytesIO(r.content)).convert("RGBA")
@@ -282,9 +283,9 @@ async def generate_ad_image(update, context):
         # 4. آماده‌سازی بوم
         draw = ImageDraw.Draw(template)
         
-        # 5. قرار دادن عکس کاربر در کادر مشکی
+        # 5. قرار دادن عکس کاربر (با متد pad برای اینکه کامل دیده بشه و برش نخوره)
         target_width, target_height = 850, 980
-        user_img = ImageOps.fit(user_img, (target_width, target_height), method=Image.Resampling.LANCZOS)
+        user_img = ImageOps.pad(user_img, (target_width, target_height), color="black", method=Image.Resampling.LANCZOS)
         template.paste(user_img, (20, 20))
         
         # 6. آماده سازی فونت
@@ -293,21 +294,28 @@ async def generate_ad_image(update, context):
         except Exception as e:
             raise Exception(f"خطای خواندن فونت: {e}")
         
-        # مختصات دقیق قرارگیری متن
+        # 7. مختصات دقیق قرارگیری متن (اصلاح شده)
         positions = [
-            (1350, 210), (1350, 282), (1350, 355), (1350, 428), (1350, 500),
-            (1350, 570), (1350, 642), (1350, 712), (1350, 845)
+            (1380, 210), # اسکین متیک
+            (1380, 282), # گان متیک
+            (1380, 355), # گلد
+            (1380, 428), # UID
+            (1380, 500), # دایموند
+            (1380, 570), # گان لجند
+            (1380, 642), # اسکین لجند
+            (1380, 712), # سیپی
+            (1300, 845)  # قیمت (کمی به چپ تر چون کادرش فرق داره)
         ]
         
-        # 7. نوشتن متن ها
+        # 8. نوشتن متن ها
         for i, (key, _) in enumerate(QUESTIONS):
             val = user_data.get(key, "")
             reshaped_text = arabic_reshaper.reshape(val)
             bidi_text = get_display(reshaped_text)
-            draw.text(positions[i], bidi_text, font=font, fill=(255, 215, 0), anchor="ra")
+            draw.text(positions[i], bidi_text, font=font, fill=(255, 215, 0), anchor="rm")
             
-        # 8. ذخیره و ارسال
-        template.convert("RGB").save("final_ad.jpg", quality=95)
+        # 9. ذخیره و ارسال (با بالاترین کیفیت)
+        template.convert("RGB").save("final_ad.jpg", quality=100, subsampling=0)
         with open("final_ad.jpg", "rb") as f:
             await msg.reply_photo(photo=f, caption="✅ تصویر آگهی شما با موفقیت ساخته شد!")
             
