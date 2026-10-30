@@ -207,7 +207,6 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.invoice_payload.startswith("stars_"): await query.answer(ok=True)
     else: await query.answer(ok=False, error_message="مشکلی پیش آمده است.")
 
-# --- بخش ساخت عکس آگهی ---
 QUESTIONS = [
     ("mythic_skin", "تعداد اسکین های متیک:"),
     ("mythic_gun", "تعداد گان های متیک:"),
@@ -254,36 +253,47 @@ async def generate_ad_image(update, context):
     msg = await update.message.reply_text("⏳ در حال ساخت تصویر آگهی... لطفاً صبر کنید.")
     
     try:
-        # 1. دانلود قالب از لینک
-        if not os.path.exists("template.jpg"):
-            r = requests.get(TEMPLATE_URL, timeout=10)
-            if r.status_code != 200: raise Exception("لینک عکس قالب خراب است (Status Code != 200)")
-            with open("template.jpg", "wb") as f: f.write(r.content)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        # 1. دانلود قالب
+        r = requests.get(TEMPLATE_URL, headers=headers, timeout=15)
+        if r.status_code != 200:
+            raise Exception(f"خطای دانلود عکس قالب (کد {r.status_code}). لینک مستقیم را چک کنید.")
+        
+        try:
+            template = Image.open(io.BytesIO(r.content)).convert("RGBA")
+        except Exception:
+            raise Exception("فایل دانلود شده عکس نیست! لینک مستقیم را چک کنید.")
 
         # 2. دانلود فونت
         if not os.path.exists("font.ttf"):
-            r = requests.get(FONT_URL, timeout=10)
-            if r.status_code != 200: raise Exception("لینک فونت خراب است")
-            with open("font.ttf", "wb") as f: f.write(r.content)
+            rf = requests.get(FONT_URL, headers=headers, timeout=15)
+            if rf.status_code != 200:
+                raise Exception(f"خطای دانلود فونت (کد {rf.status_code})")
+            with open("font.ttf", "wb") as f: f.write(rf.content)
 
         # 3. دانلود عکس کاربر
         file = await context.bot.get_file(photo_id)
         await file.download_to_drive("user_photo.jpg")
         user_img = Image.open("user_photo.jpg").convert("RGBA")
         
-        # 4. باز کردن قالب
-        template = Image.open("template.jpg").convert("RGBA")
+        # 4. آماده‌سازی بوم
         draw = ImageDraw.Draw(template)
         
-        # 5. قرار دادن عکس کاربر
+        # 5. قرار دادن عکس کاربر در کادر مشکی
         target_width, target_height = 850, 980
         user_img = ImageOps.fit(user_img, (target_width, target_height), method=Image.Resampling.LANCZOS)
         template.paste(user_img, (20, 20))
         
         # 6. آماده سازی فونت
-        try: font = ImageFont.truetype("font.ttf", 38)
-        except: font = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("font.ttf", 38)
+        except Exception as e:
+            raise Exception(f"خطای خواندن فونت: {e}")
         
+        # مختصات دقیق قرارگیری متن
         positions = [
             (1350, 210), (1350, 282), (1350, 355), (1350, 428), (1350, 500),
             (1350, 570), (1350, 642), (1350, 712), (1350, 845)
