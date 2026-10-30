@@ -1,4 +1,4 @@
-import os, logging, sqlite3
+import os, logging, sqlite3, io
 from fastapi import FastAPI, Request, Response
 import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, LabeledPrice
@@ -18,9 +18,13 @@ AD_CHANNEL_ID = "@Vasetearminazizi"
 STARS_ADMIN_IDS = [7281917579, 8396752402] 
 CHANNELS = [("@Vasetearminazizi", "https://t.me/Vasetearminazizi"), ("@etemadearminazizi", "https://t.me/etemadearminazizi")]
 
-# لینک عکس قالبی که فرستادی
-TEMPLATE_URL = "https://i.imgur.com/OdLgm7J.jpeg"
+# ================= لینک عکس قالب و فونت =================
+# لینک عکس قالبت رو اینجا بذار (باید مستقیم باشه و به jpg یا png ختم بشه)
+TEMPLATE_URL = "https://i.postimg.cc/0y2b3Qq6/template.jpg" 
+
+# لینک فونت (لینک پیشفرض وزیرمتن)
 FONT_URL = "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf"
+# =========================================================
 
 if DATABASE_URL:
     import psycopg2
@@ -34,6 +38,7 @@ else:
     c = conn.cursor()
     def q(query): return query
 
+# دیتابیس و جداول
 c.execute(q('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, is_banned INT DEFAULT 0, ref_count INT DEFAULT 0, points INT DEFAULT 0)'''))
 c.execute(q('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)'''))
 c.execute(q('''CREATE TABLE IF NOT EXISTS referrals (invited_id BIGINT PRIMARY KEY, inviter_id BIGINT)'''))
@@ -206,6 +211,7 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.invoice_payload.startswith("stars_"): await query.answer(ok=True)
     else: await query.answer(ok=False, error_message="مشکلی پیش آمده است.")
 
+# --- بخش ساخت عکس آگهی ---
 QUESTIONS = [
     ("mythic_skin", "تعداد اسکین های متیک:"),
     ("mythic_gun", "تعداد گان های متیک:"),
@@ -252,30 +258,33 @@ async def generate_ad_image(update, context):
     msg = await update.message.reply_text("⏳ در حال ساخت تصویر آگهی... لطفاً صبر کنید.")
     
     try:
-        # دانلود خودکار فونت و عکس قالب
-        if not os.path.exists("font.ttf"):
-            try:
-                r = requests.get(FONT_URL)
-                with open("font.ttf", "wb") as f: f.write(r.content)
-            except Exception as e: logger.error(f"Font download failed: {e}")
-                
+        # 1. دانلود قالب
         if not os.path.exists("template.jpg"):
-            try:
-                r = requests.get(TEMPLATE_URL)
-                with open("template.jpg", "wb") as f: f.write(r.content)
-            except Exception as e: logger.error(f"Template download failed: {e}")
+            r = requests.get(TEMPLATE_URL, timeout=10)
+            if r.status_code != 200: raise Exception("لینک عکس قالب خراب است (Status Code != 200)")
+            with open("template.jpg", "wb") as f: f.write(r.content)
 
+        # 2. دانلود فونت
+        if not os.path.exists("font.ttf"):
+            r = requests.get(FONT_URL, timeout=10)
+            if r.status_code != 200: raise Exception("لینک فونت خراب است")
+            with open("font.ttf", "wb") as f: f.write(r.content)
+
+        # 3. دانلود عکس کاربر
         file = await context.bot.get_file(photo_id)
         await file.download_to_drive("user_photo.jpg")
-        user_img = Image.open("user_photo.jpg")
+        user_img = Image.open("user_photo.jpg").convert("RGBA")
         
+        # 4. باز کردن قالب
         template = Image.open("template.jpg").convert("RGBA")
         draw = ImageDraw.Draw(template)
         
+        # 5. قرار دادن عکس کاربر
         target_width, target_height = 850, 980
         user_img = ImageOps.fit(user_img, (target_width, target_height), method=Image.Resampling.LANCZOS)
         template.paste(user_img, (20, 20))
         
+        # 6. آماده سازی فونت
         try: font = ImageFont.truetype("font.ttf", 38)
         except: font = ImageFont.load_default()
         
@@ -284,14 +293,15 @@ async def generate_ad_image(update, context):
             (1350, 570), (1350, 642), (1350, 712), (1350, 845)
         ]
         
+        # 7. نوشتن متن ها
         for i, (key, _) in enumerate(QUESTIONS):
             val = user_data.get(key, "")
             reshaped_text = arabic_reshaper.reshape(val)
             bidi_text = get_display(reshaped_text)
             draw.text(positions[i], bidi_text, font=font, fill=(255, 215, 0), anchor="ra")
             
+        # 8. ذخیره و ارسال
         template.convert("RGB").save("final_ad.jpg", quality=95)
-        
         with open("final_ad.jpg", "rb") as f:
             await msg.reply_photo(photo=f, caption="✅ تصویر آگهی شما با موفقیت ساخته شد!")
             
@@ -300,7 +310,7 @@ async def generate_ad_image(update, context):
         
     except Exception as e:
         logger.error(f"Image gen error: {e}")
-        await msg.reply_text("❌ متاسفانه در ساخت عکس مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
+        await msg.reply_text(f"❌ خطای دقیق سیستم:\n\n`{str(e)}`", parse_mode='Markdown')
     context.user_data.clear()
 
 async def mediator_handler(update, context):
