@@ -2,3 +2,7 @@ python-telegram-bot>=21.5
 fastapi
 uvicorn
 psycopg2-binary
+Pillow
+arabic-reshaper
+python-bidi
+requests
