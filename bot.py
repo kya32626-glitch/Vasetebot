@@ -444,23 +444,34 @@ async def submit_buy(update, context):
             pass
     db("UPDATE buy_requests SET admin_msg_ids=? WHERE id=?", (",".join(map(str, admin_ids)), req_id))
     commit()
-    await context.bot.send_message(ADMIN_ID, f"🛒 درخواست خرید #{req_id}\nکاربر: {query.from_user.id}\nلینک: {link}",
-        reply_markup=K([[B("ارسال پاسخ", callback_data=f"reply_buy_{req_id}")]]))
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"🛒 درخواست خرید #{req_id}\nکاربر: {query.from_user.id}\nلینک: {link}",
+        reply_markup=K([[B("ارسال پاسخ", callback_data=f"reply_buy_{req_id}")]])
+    )
+
     await query.edit_message_text("درخواست خرید دریافت شد ✅")
     context.user_data.clear()
-    async def ban_user_action(update, context, uid):
+
+
+async def ban_user_action(update, context, uid):
     db("UPDATE users SET is_banned=1 WHERE user_id=?", (uid,))
     commit()
+
     for ch, _ in CHANNELS:
         try:
             await context.bot.ban_chat_member(ch, uid)
         except Exception:
             pass
+
     try:
         await context.bot.send_message(uid, "🚫 دسترسی شما به ربات محدود شد.")
     except Exception:
         pass
+
     await update.callback_query.edit_message_text(f"کاربر {uid} بن شد.")
+
 
 async def unban_user_action(update, context, uid):
     db("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
