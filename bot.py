@@ -178,21 +178,37 @@ async def show_admin_panel(update, context):
 async def show_user_menu(update, context):
     user = update.effective_user
     text = get_text("welcome", user.first_name)
+
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=user_keyboard())
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=user_keyboard()
+        )
     else:
-        await update.message.reply_text(text, reply_markup=user_keyboard())
-        async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            text,
+            reply_markup=user_keyboard()
+        )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     context.user_data.clear()
+
     if is_banned(uid):
         return await update.message.reply_text("🚫 شما از ربات بن شده‌اید.")
 
-    is_new = not db("SELECT user_id FROM users WHERE user_id=?", (uid,)).fetchone()
+    is_new = not db(
+        "SELECT user_id FROM users WHERE user_id=?",
+        (uid,)
+    ).fetchone()
+
     ensure_user(uid)
 
     if is_new and context.args and context.args[0].startswith("ref_"):
+        # ادامه کد قبلی مربوط به دعوت دوستان را اینجا نگه دار
+        pass
         try:
             inviter = int(context.args[0][4:])
             if inviter != uid and db("SELECT user_id FROM users WHERE user_id=?", (inviter,)).fetchone():
