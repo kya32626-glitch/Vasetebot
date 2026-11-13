@@ -57,12 +57,11 @@ def _connect():
     if _is_postgres():
         if psycopg2 is None:
             raise RuntimeError("برای دیتابیس PostgreSQL باید psycopg2-binary نصب باشد.")
-        return psycopg2.connect(DATABASE_URL, sslmode="require")
-    conn = sqlite3.connect(os.getenv("SQLITE_PATH", "bot.db"), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
+        return psycopg2.connect(
+    DATABASE_URL,
+    sslmode="require",
+    options="-c search_path=public"
+        )
 
 def db_execute(sql: str, params: tuple = (), fetch: Optional[str] = None):
     """Run one SQL statement. fetch may be 'one' or 'all'."""
